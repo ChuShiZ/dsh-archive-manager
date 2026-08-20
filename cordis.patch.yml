@@ -1,0 +1,21 @@
+# dsh-archive-manager bundle patch.
+#
+# Installed via:  dsh plugin --profile <profile> add dsh-archive-manager
+# This patch INSERTs the plugin's two rows over the profile root (the same
+# mechanism @deepseek-ai/dsh-base and @deepseek-ai/dsh-web-app use to compose
+# their rows). Later bundle patches / the profile's own cordis.patch.yml can
+# override these rows by id.
+#
+#   - Host row:  the `archiveManager` service (list / unarchive / delete).
+#   - Client row: the Settings page UI. The package's `dsh.client` entry makes
+#     this row part of the browser roster (window.__DSH_BOOT__), so the web app
+#     bundles and shows the 归档会话 settings page.
+
+- insert:
+    - id: archive-manager
+      name: 'dsh-archive-manager'
+      config:
+        deleteSandbox: danger-full-access
+
+    - id: archive-manager-client
+      name: 'dsh-archive-manager/client'
