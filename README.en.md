@@ -20,7 +20,7 @@ client: Settings page "归档会话" (search + restore & open + delete)
 ## Install
 
 ```sh
-dsh plugin --profile web add dsh-archive-manager
+dsh plugin --profile web add @chushiz/dsh-archive-manager
 ```
 
 Then restart the web service to load the host half and the new client bundle. For local development use `dsh plugin --profile web add .`.
@@ -33,7 +33,7 @@ Host-side options live on the plugin row in `cordis.patch.yml`:
 
 ```yaml
 - id: archive-manager
-  name: dsh-archive-manager
+  name: '@chushiz/dsh-archive-manager'
   config:
     deleteSandbox: danger-full-access   # sandbox mode used when deleting the log dir
 ```

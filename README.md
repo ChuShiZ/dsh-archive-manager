@@ -20,7 +20,7 @@ client: 设置页"归档会话"（搜索 + 恢复并打开 + 删除）
 ## 安装
 
 ```sh
-dsh plugin --profile web add dsh-archive-manager
+dsh plugin --profile web add @chushiz/dsh-archive-manager
 ```
 
 随后重启 web 服务以加载 host 半边与新 client bundle。本地开发用 `dsh plugin --profile web add .`。
@@ -33,7 +33,7 @@ Host 侧可调参数在 `cordis.patch.yml` 的插件行上：
 
 ```yaml
 - id: archive-manager
-  name: dsh-archive-manager
+  name: '@chushiz/dsh-archive-manager'
   config:
     deleteSandbox: danger-full-access   # 删除日志目录用的沙箱模式
 ```

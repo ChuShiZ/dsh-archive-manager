@@ -1,6 +1,6 @@
-# dsh-archive-manager bundle patch.
+# @chushiz/dsh-archive-manager bundle patch.
 #
-# Installed via:  dsh plugin --profile <profile> add dsh-archive-manager
+# Installed via:  dsh plugin --profile <profile> add @chushiz/dsh-archive-manager
 # This patch INSERTs the plugin's two rows over the profile root (the same
 # mechanism @deepseek-ai/dsh-base and @deepseek-ai/dsh-web-app use to compose
 # their rows). Later bundle patches / the profile's own cordis.patch.yml can
@@ -13,9 +13,9 @@
 
 - insert:
     - id: archive-manager
-      name: 'dsh-archive-manager'
+      name: '@chushiz/dsh-archive-manager'
       config:
         deleteSandbox: danger-full-access
 
     - id: archive-manager-client
-      name: 'dsh-archive-manager/client'
+      name: '@chushiz/dsh-archive-manager/client'
