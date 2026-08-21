@@ -17,7 +17,7 @@ import { resolveConfig } from './config.js';
 /** Plugin identity used by the loader (matches row `id` in cordis.patch.yml). */
 export const id = 'archive-manager';
 
-/** Hard dependencies on harness services. */
+/** Hard dependencies on harness services. `agents` is optional (best-effort live-agent stop before delete). */
 export const inject = ['sessionPersistence', 'workspaceRegistry', 'fs', 'shell', 'sessionQuery'];
 
 /**
@@ -231,16 +231,31 @@ export function apply(ctx) {
         throw new Error('只能删除已归档的会话（活动会话请先用内置菜单归档）');
       }
 
+      // Stop a live agent before touching its files: cancel the active turn
+      // (cause 'disposed' — durable record marks it as disposed), wait for full
+      // quiescence so no process still holds the JSONL directory open.
+      let stoppedLiveAgent = false;
+      try {
+        const agent = ctx.agents?.get ? ctx.agents.get(id) : undefined;
+        if (agent) {
+          agent.cancel({ kind: 'disposed' });
+          if (typeof agent.whenIdle === 'function') await agent.whenIdle();
+          stoppedLiveAgent = true;
+        }
+      } catch {
+        // registry lookup/cancel is best-effort; fall through to delete
+      }
+
       const headers = await sessionPersistence.list();
       const header = headers.find((h) => h.id === id);
-      if (header === undefined) return { ok: true, alreadyGone: true };
+      if (header === undefined) return { ok: true, alreadyGone: true, stoppedLiveAgent };
 
       const loc = sessionPersistence.locate({ cwd: header.cwd, id });
       const dir = String(loc.path).replace(/[\\/][^\\/]*$/, '');
 
       const target = await fs.resolve(dir);
       const info = await fs.stat(target);
-      if (info === undefined) return { ok: true, alreadyGone: true };
+      if (info === undefined) return { ok: true, alreadyGone: true, stoppedLiveAgent };
 
       // ShellExecRequest has NO args field: build the full command string and pass
       // the dir via process.argv[1], avoiding nested-quoting/escaping.
@@ -262,7 +277,7 @@ export function apply(ctx) {
       if (after !== undefined) {
         throw new Error('目录删除后仍存在（可能被占用或沙箱限制）: ' + dir);
       }
-      return { ok: true };
+      return { ok: true, stoppedLiveAgent };
     },
   };
   ctx.provide('archiveManager', service);
