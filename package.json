@@ -1,6 +1,6 @@
 {
   "name": "@chushiz/dsh-archive-manager",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "DSH profile-bundle plugin: browse archived sessions, restore (un-archive) one to continue the conversation, or hard-delete its on-disk JSONL log directory. Integrates into the Settings panel.",
   "type": "module",
   "publishConfig": {
