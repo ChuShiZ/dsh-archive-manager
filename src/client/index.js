@@ -307,7 +307,8 @@ export function apply(ctx) {
       const q = String(query || '').trim();
       if (loading) return '';
       if (!q) return '共 ' + rows.length + ' 个归档会话';
-      const modeLabel = searchMode === 'fts' ? '（FTS 全文）' : searchMode === 'scan' ? '（逐会话扫描）' : '';
+      const labels = { fts: '（FTS 全文）', scan: '（逐会话扫描）', 'fts+scan': '（FTS + 扫描补充）' };
+      const modeLabel = labels[searchMode] || '';
       return '匹配 ' + rows.length + ' 个' + modeLabel;
     })();
 

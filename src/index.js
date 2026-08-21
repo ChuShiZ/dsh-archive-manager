@@ -211,7 +211,68 @@ export function apply(ctx) {
               bestMatch: best,
             };
           });
-          return { rows, query: trimmed, nextCursor: res.nextCursor || null, mode: 'fts' };
+          // FTS5 unicode61 won't substring-match inside CJK token runs:
+          // "聊" inside token "简单聊两句就可以" is one token → no match.
+          // If FTS found nothing, supplement with scan (same query+type filter)
+          // so Chinese substring searches always return results.
+          if (rows.length === 0) {
+            // fall through to scan block below
+          } else {
+            // Also merge any additional sessions that FTS missed (CJK inside token):
+            // run a quick scan, keep sessions not already in FTS results.
+            try {
+              const ftsIds = new Set(rows.map((r) => r.id));
+              const headers2 = await sessionPersistence.list();
+              const byId2 = new Map(headers2.map((h) => [h.id, h]));
+              const present2 = archived.filter((id) => byId2.has(id) && !ftsIds.has(id));
+              if (present2.length > 0) {
+                const extra = [];
+                let cur2 = 0;
+                const scanHits2 = async () => {
+                  while (cur2 < present2.length) {
+                    const idx = cur2++;
+                    const id = present2[idx];
+                    try {
+                      const filters = [{ kind: 'text', text: trimmed }];
+                      if (types.length > 0) filters.push({ kind: 'type', values: types });
+                      const docs = await sessionQuery.filterEvents(id, filters);
+                      if (docs.length > 0) {
+                        const hits = docs.slice(0, perSession).map((d) => toHit(d.text, d.time, d.type));
+                        extra.push({ id, header: byId2.get(id), hits, total: docs.length });
+                      }
+                    } catch {}
+                  }
+                };
+                const conc2 = Math.min(6, present2.length);
+                await Promise.all(Array.from({ length: conc2 }, () => scanHits2()));
+                if (extra.length > 0) {
+                  const titles2b = new Map();
+                  try {
+                    const snaps = await sessionQuery.readTitleSnapshots(extra.map((m) => m.id));
+                    for (const r of snaps) if (r.status === 'fulfilled') titles2b.set(r.sessionId, r.value?.title?.title || '');
+                  } catch {}
+                  const extraRows = extra.map((m) => ({
+                    id: m.id,
+                    title: titles2b.get(m.id) || '',
+                    cwd: m.header.cwd || '',
+                    workspace: basenameOf(m.header.cwd),
+                    createdAt: m.header.createdAt || 0,
+                    agentPreset: m.header.agentPreset || '',
+                    snippet: m.hits[0]?.segments.map((s) => s.text).join('') || '',
+                    snippets: m.hits,
+                    matchCount: m.total,
+                    bestMatch: m.hits[0] || null,
+                  }));
+                  // Append scan-found sessions after FTS-ranked ones
+                  const merged = [...rows, ...extraRows];
+                  merged.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+                  const sliced = merged.slice(0, limit);
+                  return { rows: sliced, query: trimmed, nextCursor: res.nextCursor || null, mode: sliced.length > rows.length ? 'fts+scan' : 'fts', scanSupplement: extraRows.length };
+                }
+              }
+            } catch {}
+            return { rows, query: trimmed, nextCursor: res.nextCursor || null, mode: 'fts' };
+          }
         } catch (e) {
           const code = e && e.code ? String(e.code) : '';
           if (code === 'SESSION_QUERY_INVALID_QUERY' || code === 'SESSION_QUERY_INVALID_FILTER') throw e;
