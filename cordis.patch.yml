@@ -7,15 +7,9 @@
 # override these rows by id.
 #
 #   - Host row:  the `archiveManager` service (list / unarchive / delete).
-#   - Client row: the Settings page UI. The package's `dsh.client` entry makes
-#     this row part of the browser roster (window.__DSH_BOOT__), so the web app
-#     bundles and shows the 归档会话 settings page.
+#     Client UI is auto-composed via `dsh.client` (no separate patch row needed,
+#     unlike the earlier two-row demo). See @dsh-external/dsh-client-ui-skin-maid-atelier.
 
 - insert:
     - id: archive-manager
       name: '@chushiz/dsh-archive-manager'
-      config:
-        deleteSandbox: danger-full-access
-
-    - id: archive-manager-client
-      name: '@chushiz/dsh-archive-manager/client'

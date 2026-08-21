@@ -27,42 +27,147 @@ export const inject = ['sessionPersistence', 'workspaceRegistry', 'fs', 'shell',
 export function apply(ctx) {
   const { sessionPersistence, workspaceRegistry, fs, shell, sessionQuery } = ctx;
 
-  return ctx.provide('archiveManager', {
+  async function listArchived() {
+    const archived = workspaceRegistry.archivedSessionIds || [];
+    const headers = await sessionPersistence.list();
+    const byId = new Map();
+    for (const h of headers) byId.set(h.id, h);
+    const present = archived.filter((id) => byId.has(id));
+
+    const titles = new Map();
+    if (present.length > 0) {
+      try {
+        const snaps = await sessionQuery.readTitleSnapshots(present);
+        for (const r of snaps) {
+          if (r.status === 'fulfilled') {
+            const t = r.value && r.value.title;
+            titles.set(r.sessionId, t && typeof t.title === 'string' ? t.title : '');
+          }
+        }
+      } catch (_e) {
+        /* titles are optional; fall back to cwd/id */
+      }
+    }
+
+    const rows = present.map((id) => {
+      const h = byId.get(id);
+      return {
+        id,
+        title: titles.get(id) || '',
+        cwd: h.cwd || '',
+        createdAt: h.createdAt || 0,
+        agentPreset: h.agentPreset || '',
+      };
+    });
+    rows.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    return { rows, byId, present };
+  }
+
+  const service = {
     /** List archived sessions that still exist in persistence. */
     async list() {
-      const archived = workspaceRegistry.archivedSessionIds || [];
-      const headers = await sessionPersistence.list();
-      const byId = new Map();
-      for (const h of headers) byId.set(h.id, h);
-      const present = archived.filter((id) => byId.has(id));
+      const { rows } = await listArchived();
+      return { rows };
+    },
 
-      const titles = new Map();
-      if (present.length > 0) {
+    /**
+     * Full-text search over archived sessions.
+     * Tries FTS5 (sessionQuery.searchSessions) first, falls back to per-session filterEvents.
+     * @param {string|{query:string,limit?:number}} opts
+     */
+    async search(opts) {
+      const query = typeof opts === 'string' ? opts : (opts && opts.query) || '';
+      const limit = opts && typeof opts === 'object' && Number.isFinite(opts.limit) ? opts.limit : 50;
+      const trimmed = String(query || '').trim();
+      if (!trimmed) {
+        const { rows } = await listArchived();
+        return { rows, query: '' };
+      }
+      const archived = workspaceRegistry.archivedSessionIds || [];
+      if (archived.length === 0) return { rows: [], query: trimmed };
+
+      // 1) Prefer FTS5 cross-session search (sqlite backend)
+      if (sessionQuery && typeof sessionQuery.searchSessions === 'function') {
         try {
-          const snaps = await sessionQuery.readTitleSnapshots(present);
-          for (const r of snaps) {
-            if (r.status === 'fulfilled') {
-              const t = r.value && r.value.title;
-              titles.set(r.sessionId, t && typeof t.title === 'string' ? t.title : '');
-            }
+          const res = await sessionQuery.searchSessions({
+            query: trimmed,
+            limit,
+            sessionFilters: [{ kind: 'id', values: archived }],
+          });
+          const ids = res.items.map((it) => it.header.id);
+          const titles = new Map();
+          if (ids.length > 0) {
+            try {
+              const snaps = await sessionQuery.readTitleSnapshots(ids);
+              for (const r of snaps) if (r.status === 'fulfilled') titles.set(r.sessionId, r.value?.title?.title || '');
+            } catch {}
           }
-        } catch (_e) {
-          /* titles are optional; fall back to cwd/id */
+          const rows = res.items.map((item) => {
+            const h = item.header;
+            return {
+              id: h.id,
+              title: titles.get(h.id) || '',
+              cwd: h.cwd || '',
+              createdAt: h.createdAt || 0,
+              agentPreset: h.agentPreset || '',
+              snippet: item.bestMatch?.snippet || '',
+              bestMatch: item.bestMatch || null,
+            };
+          });
+          return { rows, query: trimmed, nextCursor: res.nextCursor || null, mode: 'fts' };
+        } catch (e) {
+          const code = e && e.code ? String(e.code) : '';
+          if (code === 'SESSION_QUERY_INVALID_QUERY' || code === 'SESSION_QUERY_INVALID_FILTER') throw e;
+          if (code === 'SESSION_QUERY_SEARCH_DISABLED' || code === 'SESSION_QUERY_INDEX_FAILED') {
+            // fall through to per-session scan
+          } else if (code) {
+            // unknown search error -> fallback but keep throw for cursor errors
+            if (code.includes('CURSOR') || code.includes('LIMIT')) throw e;
+          }
         }
       }
 
-      const rows = present.map((id) => {
-        const h = byId.get(id);
-        return {
-          id,
-          title: titles.get(id) || '',
-          cwd: h.cwd || '',
-          createdAt: h.createdAt || 0,
-          agentPreset: h.agentPreset || '',
-        };
-      });
+      // 2) Fallback: backend-independent per-session text scan
+      const headers = await sessionPersistence.list();
+      const byId = new Map(headers.map((h) => [h.id, h]));
+      const present = archived.filter((id) => byId.has(id));
+      const matched = [];
+      const concurrency = 6;
+      let cursor = 0;
+      async function worker() {
+        while (cursor < present.length) {
+          const idx = cursor++;
+          const id = present[idx];
+          try {
+            const docs = await sessionQuery.filterEvents(id, [{ kind: 'text', text: trimmed }]);
+            if (docs.length > 0) {
+              const best = docs[0];
+              const snippet = String(best.text || '').slice(0, 240);
+              matched.push({ id, header: byId.get(id), snippet, best });
+            }
+          } catch {}
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(concurrency, present.length) }, () => worker()));
+      const titles2 = new Map();
+      if (matched.length > 0) {
+        try {
+          const snaps = await sessionQuery.readTitleSnapshots(matched.map((m) => m.id));
+          for (const r of snaps) if (r.status === 'fulfilled') titles2.set(r.sessionId, r.value?.title?.title || '');
+        } catch {}
+      }
+      const rows = matched.map((m) => ({
+        id: m.id,
+        title: titles2.get(m.id) || '',
+        cwd: m.header.cwd || '',
+        createdAt: m.header.createdAt || 0,
+        agentPreset: m.header.agentPreset || '',
+        snippet: m.snippet,
+        bestMatch: m.best,
+      }));
       rows.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-      return { rows };
+      const sliced = rows.slice(0, limit);
+      return { rows: sliced, query: trimmed, mode: 'scan' };
     },
 
     /** Remove an id from the durable archive set (reverse of archiveSession). */
@@ -125,5 +230,58 @@ export function apply(ctx) {
       }
       return { ok: true };
     },
+  };
+  ctx.provide('archiveManager', service);
+
+  // HTTP fallback for browser clients where service wiring is not yet proxied
+  const webFiber = ctx.inject(['webServer'], (webCtx) => {
+    const webServer = webCtx.webServer;
+    if (!webServer) return;
+    webCtx.effect(() => webServer.register({
+      kind: 'prefix',
+      path: '/archive-manager/api',
+      handler: async (req, res) => {
+        const url = new URL(req.url || '/', 'http://localhost');
+        const path = url.pathname.replace(/^\/archive-manager\/api/, '') || '/';
+        const send = (code, obj) => {
+          res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify(obj));
+        };
+        try {
+          if (req.method === 'GET' && (path === '/list' || path === '/')) {
+            const r = await service.list();
+            return send(200, r);
+          }
+          if (req.method === 'POST' && path === '/search') {
+            const body = await readBody(req);
+            const data = body ? JSON.parse(body) : {};
+            const r = await service.search(data);
+            return send(200, r);
+          }
+          if (req.method === 'POST' && path === '/unarchive') {
+            const body = await readBody(req);
+            const data = body ? JSON.parse(body) : {};
+            const r = await service.unarchive(data.id || data.sessionId);
+            return send(200, r);
+          }
+          if (req.method === 'POST' && path === '/delete') {
+            const body = await readBody(req);
+            const data = body ? JSON.parse(body) : {};
+            const r = await service.delete(data.id || data.sessionId, data.config);
+            return send(200, r);
+          }
+          return send(404, { error: 'not found' });
+        } catch (e) {
+          return send(500, { error: e && e.message ? e.message : String(e) });
+        }
+      },
+    }), 'archiveManager.webServer');
   });
+  ctx.effect(() => () => webFiber.dispose(), 'archiveManager.webServer.cleanup');
+
+  async function readBody(req) {
+    const chunks = [];
+    for await (const c of req) chunks.push(Buffer.from(c));
+    return Buffer.concat(chunks).toString('utf8');
+  }
 }

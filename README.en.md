@@ -8,9 +8,9 @@ English · [中文](./README.md)
 
 A DeepSeek Harness Web GUI plugin for managing **archived** sessions, under **Settings > 归档会话**. The harness's built-in "archive" is one-way: it only hides a session, with no un-archive. This plugin adds browse, restore, and true delete:
 
-- **Browse** — list archived sessions, searchable by title / cwd / id / preset.
+- **Browse** — list archived sessions, searchable by title / cwd / id / preset / **full-text content** (FTS5 over user/assistant/tool messages, hit shows snippet).
 - **Restore & open** — un-archive and open, so you can view history and continue the conversation.
-- **Delete** — physically removes the session's log directory. **Irreversible.**
+- **Delete** — physically removes the session's log directory. **Irreversible**.
 
 ```
 host:   archive set + persisted title/metadata  --archiveManager service--> browser
@@ -23,24 +23,7 @@ client: Settings page "归档会话" (search + restore & open + delete)
 dsh plugin --profile web add @chushiz/dsh-archive-manager
 ```
 
-Then restart the web service to load the host half and the new client bundle. For local development use `dsh plugin --profile web add .`.
-
-The settings section lives under **Settings > 归档会话**.
-
-## Configuration
-
-Host-side options live on the plugin row in `cordis.patch.yml`:
-
-```yaml
-- id: archive-manager
-  name: '@chushiz/dsh-archive-manager'
-  config:
-    deleteSandbox: danger-full-access   # sandbox mode used when deleting the log dir
-```
-
-| Option | Default | Effect |
-| --- | --- | --- |
-| `deleteSandbox` | `danger-full-access` | Mode for the delete command. `danger-full-access` runs unconfined; `workspace-write` is confining and fails when the host session root is outside the allowed roots or no sandbox backend is usable. Keep it confined on shared/multi-tenant hosts. |
+Restart `dsh web` after install, then find it under **Settings > 归档会话**.
 
 ## Permission boundary
 
