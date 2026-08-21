@@ -70,6 +70,59 @@ export function apply(ctx) {
     return parts[parts.length - 1] || s;
   }
 
+  // ── Search display helpers ─────────────────────────────────────────────
+  // Same matching semantics as session-query's compileSessionTextFilter:
+  // case-insensitive, whitespace-flexible, regex-safe literal terms.
+  function buildKeywordRegex(query) {
+    const pattern = String(query).trim().split(/\s+/u)
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+      .join('\\s+');
+    return new RegExp(pattern, 'giu');
+  }
+
+  // Display-only noise reduction: collapse long path-like runs to …\last-segment,
+  // squash whitespace. Raw logs are never touched.
+  function normalizeForDisplay(text) {
+    let s = String(text || '');
+    s = s.replace(/[^\s"']*[\\/][^\s"']*/g, (m) => {
+      if (m.length <= 48) return m;
+      const parts = m.split(/[\\/]/).filter(Boolean);
+      const last = parts[parts.length - 1] || m;
+      return '…' + (m.includes('\\') ? '\\' : '/') + last;
+    });
+    return s.replace(/\s+/gu, ' ').trim();
+  }
+
+  // Cut a keyword-centered window and return structured segments for <mark> rendering.
+  // Returns [{ text, hit }]; hit=true segments should be highlighted client-side.
+  function buildSnippetSegments(text, keywordRegex, radius = 40) {
+    const normalized = normalizeForDisplay(text);
+    keywordRegex.lastIndex = 0;
+    const m = keywordRegex.exec(normalized);
+    if (!m) {
+      return [{ text: normalized.slice(0, radius * 2) + (normalized.length > radius * 2 ? '…' : ''), hit: false }];
+    }
+    const start = Math.max(0, m.index - radius);
+    const end = Math.min(normalized.length, m.index + m[0].length + radius);
+    let window = normalized.slice(start, end);
+    if (start > 0) window = '…' + window;
+    if (end < normalized.length) window = window + '…';
+
+    // Split the window on keyword occurrences into segments.
+    const segments = [];
+    let last = 0;
+    keywordRegex.lastIndex = 0;
+    let km;
+    while ((km = keywordRegex.exec(window)) !== null) {
+      if (km.index > last) segments.push({ text: window.slice(last, km.index), hit: false });
+      segments.push({ text: km[0], hit: true });
+      last = km.index + km[0].length;
+      if (km[0].length === 0) keywordRegex.lastIndex++;
+    }
+    if (last < window.length) segments.push({ text: window.slice(last), hit: false });
+    return segments.length > 0 ? segments : [{ text: window, hit: false }];
+  }
+
   const service = {
     /** List archived sessions that still exist in persistence. */
     async list() {
@@ -86,6 +139,7 @@ export function apply(ctx) {
       const query = typeof opts === 'string' ? opts : (opts && opts.query) || '';
       const limit = opts && typeof opts === 'object' && Number.isFinite(opts.limit) ? opts.limit : 50;
       const perSession = opts && typeof opts === 'object' && Number.isFinite(opts.perSession) ? Math.max(1, Math.min(10, opts.perSession)) : 5;
+      const types = opts && typeof opts === 'object' && Array.isArray(opts.types) ? opts.types.filter((t) => typeof t === 'string' && t) : [];
       const trimmed = String(query || '').trim();
       if (!trimmed) {
         const { rows } = await listArchived();
@@ -93,6 +147,14 @@ export function apply(ctx) {
       }
       const archived = workspaceRegistry.archivedSessionIds || [];
       if (archived.length === 0) return { rows: [], query: trimmed };
+
+      const keywordRegex = buildKeywordRegex(trimmed);
+      const toHit = (text, time, type) => ({
+        segments: buildSnippetSegments(text, keywordRegex),
+        fullText: normalizeForDisplay(text),
+        time: time || 0,
+        type: type || '',
+      });
 
       // 1) Prefer FTS5 cross-session search (sqlite backend)
       if (sessionQuery && typeof sessionQuery.searchSessions === 'function') {
@@ -115,12 +177,18 @@ export function apply(ctx) {
           if (typeof sessionQuery.searchEvents === 'function') {
             await Promise.all(res.items.map(async (item) => {
               try {
-                const ev = await sessionQuery.searchEvents({ sessionId: item.header.id, query: trimmed, limit: perSession });
+                const ev = await sessionQuery.searchEvents({
+                  sessionId: item.header.id,
+                  query: trimmed,
+                  limit: perSession,
+                  ...(types.length > 0 ? { filters: [{ kind: 'type', values: types }] } : {}),
+                });
                 hitsBySession.set(item.header.id, (ev.items || []).map((e) => ({
                   snippet: e.snippet || '',
+                  text: e.snippet || '',
                   time: e.time || 0,
                   type: e.type || '',
-                })).filter((h) => h.snippet));
+                })).filter((h) => h.text));
               } catch {}
             }));
           }
@@ -128,7 +196,8 @@ export function apply(ctx) {
             const h = item.header;
             const best = item.bestMatch || null;
             const hits = hitsBySession.get(h.id);
-            const snippets = hits && hits.length > 0 ? hits.slice(0, perSession) : (best && best.snippet ? [{ snippet: best.snippet, time: best.time || 0, type: best.type || '' }] : []);
+            const rawHits = hits && hits.length > 0 ? hits.slice(0, perSession) : (best && best.snippet ? [{ text: best.snippet, time: best.time || 0, type: best.type || '' }] : []);
+            const snippets = rawHits.map((h2) => toHit(h2.text, h2.time, h2.type));
             return {
               id: h.id,
               title: titles.get(h.id) || '',
@@ -136,7 +205,7 @@ export function apply(ctx) {
               workspace: basenameOf(h.cwd),
               createdAt: h.createdAt || 0,
               agentPreset: h.agentPreset || '',
-              snippet: snippets[0]?.snippet || '',
+              snippet: snippets[0]?.segments.map((s) => s.text).join('') || '',
               snippets,
               matchCount: snippets.length,
               bestMatch: best,
@@ -167,13 +236,11 @@ export function apply(ctx) {
           const idx = cursor++;
           const id = present[idx];
           try {
-            const docs = await sessionQuery.filterEvents(id, [{ kind: 'text', text: trimmed }]);
+            const filters = [{ kind: 'text', text: trimmed }];
+            if (types.length > 0) filters.push({ kind: 'type', values: types });
+            const docs = await sessionQuery.filterEvents(id, filters);
             if (docs.length > 0) {
-              const hits = docs.slice(0, perSession).map((d) => ({
-                snippet: String(d.text || '').slice(0, 240),
-                time: d.time || 0,
-                type: d.type || '',
-              }));
+              const hits = docs.slice(0, perSession).map((d) => toHit(d.text, d.time, d.type));
               matched.push({ id, header: byId.get(id), hits, total: docs.length });
             }
           } catch {}
@@ -194,7 +261,7 @@ export function apply(ctx) {
         workspace: basenameOf(m.header.cwd),
         createdAt: m.header.createdAt || 0,
         agentPreset: m.header.agentPreset || '',
-        snippet: m.hits[0]?.snippet || '',
+        snippet: m.hits[0]?.segments.map((s) => s.text).join('') || '',
         snippets: m.hits,
         matchCount: m.total,
         bestMatch: m.hits[0] || null,

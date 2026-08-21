@@ -17,7 +17,7 @@ A DeepSeek Harness Web GUI plugin for managing **archived** sessions, under **Se
 - **Restore & open** — un-archive and open, so you can view history and continue the conversation.
 - **Delete** — physically removes the session's log directory. **Irreversible.**
 
-![Archived sessions settings page: workspace groups + full-text search snippets](assets/screenshots/archived-sessions-search.png)
+![Archived sessions settings page: type filters + keyword highlighting + hit snippets](assets/screenshots/archived-sessions-search.png)
 
 ```
 host:   archive set + persisted title/metadata  --archiveManager service--> browser

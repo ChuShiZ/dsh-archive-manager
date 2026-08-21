@@ -17,7 +17,7 @@ DeepSeek Harness Web GUI 的**归档会话管理**插件，位于 **设置 > 归
 - **恢复并打开** —— 取消归档并打开，可查看历史、继续对话。
 - **删除** —— 物理移除会话日志目录，**不可逆**。
 
-![归档会话设置页：工作区分组 + 全文搜索命中摘要](assets/screenshots/archived-sessions-search.png)
+![归档会话设置页：类型筛选 + 关键词高亮 + 命中摘要](assets/screenshots/archived-sessions-search.png)
 
 ```
 host:   归档集合 + 持久化标题/元数据  --archiveManager 服务--> 浏览器

@@ -57,6 +57,13 @@ export function apply(ctx) {
     '.ds-ardl-title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dsw-alias-label-primary);}',
     '.ds-ardl-sub{font-size:12px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px;}',
     '.ds-ardl-snippet{font-size:12px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:4px;background:color-mix(in srgb, var(--dsw-alias-brand-primary) 7%, transparent);padding:3px 6px;border-radius:4px;}',
+    '.ds-ardl-snippet.expandable{cursor:pointer;}',
+    '.ds-ardl-snippet.expanded{white-space:normal;cursor:pointer;word-break:break-all;}',
+    '.ds-ardl-mark{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 22%, transparent);color:var(--dsw-alias-label-primary);font-weight:600;border-radius:2px;padding:0 1px;}',
+    '.ds-ardl-chips{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;}',
+    '.ds-ardl-chip{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer;}',
+    '.ds-ardl-chip:hover{background:var(--dsw-alias-bg-layer-1);}',
+    '.ds-ardl-chip.active{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary);background:color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent);}',
     '.ds-ardl-snippets{margin-top:2px;}',
     '.ds-ardl-snippet-more{font-size:11px;color:var(--dsw-alias-label-secondary);opacity:.7;margin-top:3px;}',
     '.ds-ardl-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;flex:0 1 auto;min-width:0;white-space:nowrap;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px;}',
@@ -110,6 +117,15 @@ export function apply(ctx) {
     const [confirmId, setConfirmId] = React.useState(undefined);
     const [busyId, setBusyId] = React.useState(undefined);
     const [error, setError] = React.useState('');
+    const [typeFilter, setTypeFilter] = React.useState('all');
+    const [expandedHits, setExpandedHits] = React.useState({});
+
+    const TYPE_CHIPS = [
+      { key: 'all', label: '全部', types: [] },
+      { key: 'user', label: '用户消息', types: ['user/message'] },
+      { key: 'assistant', label: 'AI 回复', types: ['assistant/message'] },
+      { key: 'tool', label: '工具调用', types: ['tool/call', 'tool/result'] },
+    ];
 
     const refresh = React.useCallback(async () => {
       setLoading(true);
@@ -129,7 +145,7 @@ export function apply(ctx) {
 
     // debounced full-text search: query -> manager.search()
     const searchTimer = React.useRef(null);
-    const doSearch = React.useCallback(async (q) => {
+    const doSearch = React.useCallback(async (q, types) => {
       const trimmed = String(q || '').trim();
       if (!trimmed) {
         await refresh();
@@ -141,7 +157,7 @@ export function apply(ctx) {
         const m = getManager();
         if (!m) throw new Error('archiveManager 服务未就绪');
         if (typeof m.search === 'function') {
-          const r = await m.search({ query: trimmed, limit: 50 });
+          const r = await m.search({ query: trimmed, limit: 50, ...(types && types.length > 0 ? { types } : {}) });
           setRows(r && r.rows ? r.rows : []);
           setSearchMode(r && r.mode ? r.mode : '');
         } else {
@@ -156,6 +172,13 @@ export function apply(ctx) {
         setSearching(false);
       }
     }, [refresh]);
+
+    const switchTypeFilter = (key) => {
+      setTypeFilter(key);
+      const chip = TYPE_CHIPS.find((c) => c.key === key);
+      const trimmed = String(query || '').trim();
+      if (trimmed) doSearch(trimmed, chip ? chip.types : []);
+    };
 
     React.useEffect(() => {
       refresh();
@@ -225,14 +248,29 @@ export function apply(ctx) {
 
     const renderRow = (s) => {
       const confirming = confirmId === s.id;
-      const snippetList = (s.snippets && s.snippets.length > 0 ? s.snippets : (s.snippet ? [{ snippet: s.snippet }] : []));
+      const snippetList = (s.snippets && s.snippets.length > 0 ? s.snippets : (s.snippet ? [{ segments: [{ text: s.snippet, hit: false }] }] : []));
+      const renderHit = (h, i) => {
+        const key = s.id + ':' + i;
+        const expanded = !!expandedHits[key];
+        const segments = h.segments && h.segments.length > 0 ? h.segments : [{ text: h.snippet || '', hit: false }];
+        return React.createElement('div', {
+          key: i,
+          className: 'ds-ardl-snippet' + (expanded ? ' expanded' : ' expandable'),
+          title: expanded ? '' : (h.fullText || segments.map((seg) => seg.text).join('')),
+          onClick: () => setExpandedHits((prev) => ({ ...prev, [key]: !prev[key] })),
+        },
+          segments.map((seg, j) => seg.hit
+            ? React.createElement('mark', { key: j, className: 'ds-ardl-mark' }, seg.text)
+            : React.createElement('span', { key: j }, seg.text))
+        );
+      };
       return React.createElement('div', { key: s.id, className: 'ds-ardl-row' },
         React.createElement('div', { className: 'ds-ardl-meta' },
           React.createElement('div', { className: 'ds-ardl-title' }, titleOf(s)),
           React.createElement('div', { className: 'ds-ardl-sub' }, subOf(s)),
           snippetList.length > 0
             ? React.createElement('div', { className: 'ds-ardl-snippets' },
-                snippetList.map((h, i) => React.createElement('div', { key: i, className: 'ds-ardl-snippet', title: h.snippet }, h.snippet)),
+                snippetList.map(renderHit),
                 typeof s.matchCount === 'number' && s.matchCount > snippetList.length
                   ? React.createElement('div', { className: 'ds-ardl-snippet-more' }, '… 还有 ' + (s.matchCount - snippetList.length) + ' 处命中')
                   : null
@@ -279,7 +317,14 @@ export function apply(ctx) {
         placeholder: '搜索名称 / 目录 / id / 预设 / 会话正文…', value: query,
         onChange: (e) => setQuery(e.target.value),
       }),
-      React.createElement('div', { className: 'ds-ardl-hint' }, '支持全文：检索会话内的用户消息、AI 回复与工具调用内容（FTS5），每个会话最多展示 5 条命中，空输入显示全部归档'),
+      React.createElement('div', { className: 'ds-ardl-chips' },
+        TYPE_CHIPS.map((c) => React.createElement('button', {
+          key: c.key,
+          className: 'ds-ardl-chip' + (typeFilter === c.key ? ' active' : ''),
+          onClick: () => switchTypeFilter(c.key),
+        }, c.label))
+      ),
+      React.createElement('div', { className: 'ds-ardl-hint' }, '支持全文：检索会话内的用户消息、AI 回复与工具调用内容（FTS5），每个会话最多展示 5 条命中，点击命中可展开，空输入显示全部归档'),
       !loading ? React.createElement('div', { className: 'ds-ardl-count' }, countText + (searching ? '  ·  搜索中…' : '')) : null,
       error ? React.createElement('div', { className: 'ds-ardl-err' }, error) : null,
       React.createElement('div', { className: 'ds-ardl-list' }, body)
