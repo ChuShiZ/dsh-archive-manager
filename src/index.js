@@ -407,6 +407,65 @@ export function apply(ctx) {
       }
       return { ok: true, stoppedLiveAgent };
     },
+
+    /** Batch delete: sequentially reuses delete() so each live-agent stop + shell removal is isolated. */
+    async deleteMany(ids, configOverride) {
+      if (!Array.isArray(ids) || ids.length === 0) throw new Error('ids 不能为空');
+      const unique = [...new Set(ids.map((v) => String(v).trim()).filter(Boolean))];
+      const results = [];
+      for (const id of unique) {
+        try {
+          const r = await service.delete(id, configOverride);
+          results.push({ id, ok: true, ...r });
+        } catch (e) {
+          results.push({ id, ok: false, error: e && e.message ? e.message : String(e) });
+        }
+      }
+      const succeeded = results.filter((r) => r.ok).length;
+      return { results, succeeded, failed: results.length - succeeded, total: results.length };
+    },
+
+    /** Preview: last N user/assistant messages (read-only, no tool noise). Ensures even count starts with user for coherent dialogue. */
+    async preview(id, count = 4) {
+      if (!id) throw new Error('缺少会话 id');
+      const n = Number.isFinite(count) ? Math.max(1, Math.min(10, count)) : 4;
+      // Prefer current surface (folded view), fall back to full read.
+      let events = [];
+      try {
+        const surf = await sessionQuery.readSurface(id);
+        events = surf.events || [];
+      } catch {
+        try {
+          const loaded = await sessionQuery.readSession(id);
+          events = loaded.events || [];
+        } catch (e) {
+          throw new Error('无法读取会话: ' + (e && e.message ? e.message : String(e)));
+        }
+      }
+      const msgs = [];
+      for (let i = events.length - 1; i >= 0 && msgs.length < n; i--) {
+        const ev = events[i];
+        if (!ev || !ev.type) continue;
+        let role = '';
+        let text = '';
+        if (ev.type === 'user/message') {
+          role = 'user';
+          text = (ev.data?.content || []).map((b) => (b && b.text) || '').join(' ').trim();
+        } else if (ev.type === 'assistant/message') {
+          role = 'assistant';
+          const c = ev.data?.message?.content || [];
+          text = c.map((b) => (b && b.text) || '').join(' ').trim();
+        } else {
+          continue;
+        }
+        if (!text) continue;
+        text = normalizeForDisplay(text);
+        if (text.length > 200) text = text.slice(0, 200) + '…';
+        msgs.push({ role, text, time: ev.time || 0, type: ev.type });
+      }
+      msgs.reverse();
+      return { messages: msgs, total: msgs.length };
+    },
   };
   ctx.provide('archiveManager', service);
 
@@ -479,6 +538,18 @@ export function apply(ctx) {
             const body = await readBody(req);
             const data = body ? JSON.parse(body) : {};
             const r = await service.delete(data.id || data.sessionId, data.config);
+            return send(200, r);
+          }
+          if (req.method === 'POST' && path === '/deleteMany') {
+            const body = await readBody(req);
+            const data = body ? JSON.parse(body) : {};
+            const r = await service.deleteMany(data.ids || [], data.config);
+            return send(200, r);
+          }
+          if (req.method === 'GET' && path.startsWith('/preview')) {
+            const id = url.searchParams.get('id') || url.searchParams.get('sessionId') || '';
+            const n = Number(url.searchParams.get('count') || 3);
+            const r = await service.preview(id, n);
             return send(200, r);
           }
           return send(404, { error: 'not found' });

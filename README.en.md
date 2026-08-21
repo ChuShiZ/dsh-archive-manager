@@ -13,11 +13,15 @@ English · [中文](./README.md)
 A DeepSeek Harness Web GUI plugin for managing **archived** sessions, under **Settings > 归档会话**. The harness's built-in "archive" is one-way: it only hides a session, with no un-archive. This plugin adds browse, restore, and true delete:
 
 - **Browse** — archived sessions grouped by workspace, searchable by title / cwd / id / preset / **full-text content**.
-- **Full-text search** — powered by the harness's `sessionQuery` SQLite FTS5 index: user messages, assistant replies, tool calls & arguments, and todos are all searchable; hits show a context snippet, with automatic per-session scan fallback when no FTS backend exists.
+- **Full-text search** — `sessionQuery` SQLite FTS5 over user/assistant/tool messages; highlighted, keyword-centered snippets, up to 5 hits per session, filterable by type.
+- **Batch ops** — checkboxes + top-bar batch delete; live agents are cancelled before removal.
+- **Preview** — click the title to expand the last 4 dialogue turns (user-AI alternating) without restoring.
 - **Restore & open** — un-archive and open, so you can view history and continue the conversation.
 - **Delete** — physically removes the session's log directory. **Irreversible.**
 
-![Archived sessions settings page: type filters + keyword highlighting + hit snippets](assets/screenshots/archived-sessions-search.png)
+![Search: type filters + keyword highlighting](assets/screenshots/search-highlight.png)
+
+![Preview: 4-turn dialogue on title click](assets/screenshots/preview-dialog.png)
 
 ```
 host:   archive set + persisted title/metadata  --archiveManager service--> browser

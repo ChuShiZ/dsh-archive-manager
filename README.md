@@ -13,11 +13,15 @@
 DeepSeek Harness Web GUI 的**归档会话管理**插件，位于 **设置 > 归档会话**。harness 内置的"归档"是单向的：只隐藏会话、没有取消归档。本插件补齐浏览、恢复、删除：
 
 - **浏览** —— 按工作区分组列出已归档会话，支持标题 / 目录 / id / 预设 / **会话正文全文**搜索。
-- **全文搜索** —— 基于 harness 的 `sessionQuery` SQLite FTS5 索引：用户消息、AI 回复、工具调用与参数、todo 全部可搜；命中显示上下文 snippet，无 FTS 后端时自动回退逐会话扫描。
+- **全文搜索** —— 基于 harness 的 `sessionQuery` SQLite FTS5 索引：用户消息、AI 回复、工具调用与参数、todo 全部可搜；命中高亮、关键词居中短窗口、每会话最多 5 条，可按类型筛选。
+- **批量操作** —— 多选复选框 + 顶部批量删除；删除前自动停掉活着的 agent，避免文件占用。
+- **对话预览** —— 点击标题展开最近 4 句对话（用户-AI 交替），无需恢复即可判断是否为目标会话。
 - **恢复并打开** —— 取消归档并打开，可查看历史、继续对话。
 - **删除** —— 物理移除会话日志目录，**不可逆**。
 
-![归档会话设置页：类型筛选 + 关键词高亮 + 命中摘要](assets/screenshots/archived-sessions-search.png)
+![搜索：类型筛选 + 关键词高亮](assets/screenshots/search-highlight.png)
+
+![预览：点击标题展开 4 句对话](assets/screenshots/preview-dialog.png)
 
 ```
 host:   归档集合 + 持久化标题/元数据  --archiveManager 服务--> 浏览器
