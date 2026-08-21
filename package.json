@@ -1,6 +1,6 @@
 {
   "name": "@chushiz/dsh-archive-manager",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "DSH profile-bundle plugin: browse archived sessions, restore (un-archive) one to continue the conversation, or hard-delete its on-disk JSONL log directory. Integrates into the Settings panel.",
   "type": "module",
   "publishConfig": {
@@ -39,15 +39,19 @@
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
-    "LICENSE"
+    "LICENSE",
+    "assets"
   ],
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.8"
   },
   "scripts": {
-    "bundle": "tsdown",
+    "build": "tsdown && node scripts/rename-client.mjs",
     "watch": "tsdown --watch"
+  },
+  "devDependencies": {
+    "tsdown": "^0.22.14"
   },
   "license": "MIT"
 }

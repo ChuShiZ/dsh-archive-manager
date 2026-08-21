@@ -55,12 +55,19 @@ export function apply(ctx) {
         id,
         title: titles.get(id) || '',
         cwd: h.cwd || '',
+        workspace: basenameOf(h.cwd),
         createdAt: h.createdAt || 0,
         agentPreset: h.agentPreset || '',
       };
     });
     rows.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     return { rows, byId, present };
+  }
+
+  function basenameOf(p) {
+    const s = String(p || '').replace(/[\\/]+$/, '');
+    const parts = s.split(/[\\/]/);
+    return parts[parts.length - 1] || s;
   }
 
   const service = {
@@ -78,6 +85,7 @@ export function apply(ctx) {
     async search(opts) {
       const query = typeof opts === 'string' ? opts : (opts && opts.query) || '';
       const limit = opts && typeof opts === 'object' && Number.isFinite(opts.limit) ? opts.limit : 50;
+      const perSession = opts && typeof opts === 'object' && Number.isFinite(opts.perSession) ? Math.max(1, Math.min(10, opts.perSession)) : 5;
       const trimmed = String(query || '').trim();
       if (!trimmed) {
         const { rows } = await listArchived();
@@ -102,16 +110,36 @@ export function apply(ctx) {
               for (const r of snaps) if (r.status === 'fulfilled') titles.set(r.sessionId, r.value?.title?.title || '');
             } catch {}
           }
+          // Per-session event hits (up to `perSession` snippets each)
+          const hitsBySession = new Map();
+          if (typeof sessionQuery.searchEvents === 'function') {
+            await Promise.all(res.items.map(async (item) => {
+              try {
+                const ev = await sessionQuery.searchEvents({ sessionId: item.header.id, query: trimmed, limit: perSession });
+                hitsBySession.set(item.header.id, (ev.items || []).map((e) => ({
+                  snippet: e.snippet || '',
+                  time: e.time || 0,
+                  type: e.type || '',
+                })).filter((h) => h.snippet));
+              } catch {}
+            }));
+          }
           const rows = res.items.map((item) => {
             const h = item.header;
+            const best = item.bestMatch || null;
+            const hits = hitsBySession.get(h.id);
+            const snippets = hits && hits.length > 0 ? hits.slice(0, perSession) : (best && best.snippet ? [{ snippet: best.snippet, time: best.time || 0, type: best.type || '' }] : []);
             return {
               id: h.id,
               title: titles.get(h.id) || '',
               cwd: h.cwd || '',
+              workspace: basenameOf(h.cwd),
               createdAt: h.createdAt || 0,
               agentPreset: h.agentPreset || '',
-              snippet: item.bestMatch?.snippet || '',
-              bestMatch: item.bestMatch || null,
+              snippet: snippets[0]?.snippet || '',
+              snippets,
+              matchCount: snippets.length,
+              bestMatch: best,
             };
           });
           return { rows, query: trimmed, nextCursor: res.nextCursor || null, mode: 'fts' };
@@ -141,9 +169,12 @@ export function apply(ctx) {
           try {
             const docs = await sessionQuery.filterEvents(id, [{ kind: 'text', text: trimmed }]);
             if (docs.length > 0) {
-              const best = docs[0];
-              const snippet = String(best.text || '').slice(0, 240);
-              matched.push({ id, header: byId.get(id), snippet, best });
+              const hits = docs.slice(0, perSession).map((d) => ({
+                snippet: String(d.text || '').slice(0, 240),
+                time: d.time || 0,
+                type: d.type || '',
+              }));
+              matched.push({ id, header: byId.get(id), hits, total: docs.length });
             }
           } catch {}
         }
@@ -160,10 +191,13 @@ export function apply(ctx) {
         id: m.id,
         title: titles2.get(m.id) || '',
         cwd: m.header.cwd || '',
+        workspace: basenameOf(m.header.cwd),
         createdAt: m.header.createdAt || 0,
         agentPreset: m.header.agentPreset || '',
-        snippet: m.snippet,
-        bestMatch: m.best,
+        snippet: m.hits[0]?.snippet || '',
+        snippets: m.hits,
+        matchCount: m.total,
+        bestMatch: m.hits[0] || null,
       }));
       rows.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
       const sliced = rows.slice(0, limit);
@@ -233,10 +267,43 @@ export function apply(ctx) {
   };
   ctx.provide('archiveManager', service);
 
-  // HTTP fallback for browser clients where service wiring is not yet proxied
+  // HTTP fallback for browser clients where service wiring is not yet proxied.
+  // Trust fence (mirrors client-connection's isTrustedApiRequest): mandatory
+  // Host header (DNS-rebinding defense), cross-site requests refused, and an
+  // 8 KiB body cap enforced two ways (Content-Length precheck + stream count).
   const webFiber = ctx.inject(['webServer'], (webCtx) => {
     const webServer = webCtx.webServer;
     if (!webServer) return;
+    const MAX_BODY_BYTES = 8 * 1024;
+    const trustCheck = (req) => {
+      const host = String(req.headers?.host || '');
+      if (!host) return false; // no Host -> possible DNS rebinding
+      if (!/^[-a-zA-Z0-9.]+(:\d+)?$/.test(host)) return false; // weird chars (port allowed)
+      const origin = req.headers?.origin;
+      if (origin !== undefined && origin !== null && origin !== 'null') {
+        try {
+          const o = new URL(String(origin));
+          if (o.host.toLowerCase() !== host.toLowerCase()) return false; // cross-site
+        } catch {
+          return false;
+        }
+      } else if (origin === 'null') {
+        return false; // opaque origin (sandboxed iframe)
+      }
+      return true;
+    };
+    const readBody = async (req) => {
+      const len = Number(req.headers?.['content-length'] || 0);
+      if (len > MAX_BODY_BYTES) throw new Error('body too large');
+      const chunks = [];
+      let total = 0;
+      for await (const c of req) {
+        total += c.length;
+        if (total > MAX_BODY_BYTES) throw new Error('body too large');
+        chunks.push(Buffer.from(c));
+      }
+      return Buffer.concat(chunks).toString('utf8');
+    };
     webCtx.effect(() => webServer.register({
       kind: 'prefix',
       path: '/archive-manager/api',
@@ -248,6 +315,7 @@ export function apply(ctx) {
           res.end(JSON.stringify(obj));
         };
         try {
+          if (!trustCheck(req)) return send(403, { error: 'untrusted request' });
           if (req.method === 'GET' && (path === '/list' || path === '/')) {
             const r = await service.list();
             return send(200, r);
@@ -278,10 +346,4 @@ export function apply(ctx) {
     }), 'archiveManager.webServer');
   });
   ctx.effect(() => () => webFiber.dispose(), 'archiveManager.webServer.cleanup');
-
-  async function readBody(req) {
-    const chunks = [];
-    for await (const c of req) chunks.push(Buffer.from(c));
-    return Buffer.concat(chunks).toString('utf8');
-  }
 }

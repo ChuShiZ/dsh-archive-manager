@@ -11,9 +11,9 @@
  * hides it from the client, expose it via a `@Remote` method on the service so
  * `ctx.archiveManager.*` is callable in the browser.
  */
-export {};
-
 export const inject = ['slots', 'sessions', 'timer'];
+
+const React = typeof require !== 'undefined' ? require('react') : globalThis.React;
 
 // The module-loader wrapper below is the shape the web build produces. Source
 // targets/tsdown uses, so keep `apply` as the frame that registers the slot UI.
@@ -48,11 +48,17 @@ export function apply(ctx) {
     '.ds-ardl-count{font-size:12px;color:var(--dsw-alias-label-secondary);margin:0 0 8px;}',
     '.ds-ardl-hint{font-size:11px;color:var(--dsw-alias-label-secondary);margin:0 0 8px;opacity:.8;}',
     '.ds-ardl-list{max-height:62vh;overflow:auto;margin:0;}',
+    '.ds-ardl-group{margin-bottom:6px;}',
+    '.ds-ardl-group-header{display:flex;align-items:center;justify-content:space-between;padding:8px 8px 4px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);border-bottom:1px solid var(--dsw-alias-border-l2);}',
+    '.ds-ardl-group-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+    '.ds-ardl-group-count{flex:none;opacity:.7;}',
     '.ds-ardl-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 8px;border-bottom:1px solid var(--dsw-alias-border-l1);}',
     '.ds-ardl-meta{min-width:0;flex:1;}',
     '.ds-ardl-title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dsw-alias-label-primary);}',
     '.ds-ardl-sub{font-size:12px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px;}',
     '.ds-ardl-snippet{font-size:12px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:4px;background:color-mix(in srgb, var(--dsw-alias-brand-primary) 7%, transparent);padding:3px 6px;border-radius:4px;}',
+    '.ds-ardl-snippets{margin-top:2px;}',
+    '.ds-ardl-snippet-more{font-size:11px;color:var(--dsw-alias-label-secondary);opacity:.7;margin-top:3px;}',
     '.ds-ardl-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;flex:0 1 auto;min-width:0;white-space:nowrap;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px;}',
     '.ds-ardl-btn:hover{background:var(--dsw-alias-bg-layer-1);}',
     '.ds-ardl-btn:disabled{opacity:.5;cursor:default;}',
@@ -205,29 +211,59 @@ export function apply(ctx) {
     };
 
     const isBusy = loading || searching;
+
+    // group rows by workspace (mirrors sidebar grouping)
+    const groups = (() => {
+      const map = new Map();
+      for (const r of rows) {
+        const key = r.workspace || '(未知工作区)';
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(r);
+      }
+      return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    })();
+
+    const renderRow = (s) => {
+      const confirming = confirmId === s.id;
+      const snippetList = (s.snippets && s.snippets.length > 0 ? s.snippets : (s.snippet ? [{ snippet: s.snippet }] : []));
+      return React.createElement('div', { key: s.id, className: 'ds-ardl-row' },
+        React.createElement('div', { className: 'ds-ardl-meta' },
+          React.createElement('div', { className: 'ds-ardl-title' }, titleOf(s)),
+          React.createElement('div', { className: 'ds-ardl-sub' }, subOf(s)),
+          snippetList.length > 0
+            ? React.createElement('div', { className: 'ds-ardl-snippets' },
+                snippetList.map((h, i) => React.createElement('div', { key: i, className: 'ds-ardl-snippet', title: h.snippet }, h.snippet)),
+                typeof s.matchCount === 'number' && s.matchCount > snippetList.length
+                  ? React.createElement('div', { className: 'ds-ardl-snippet-more' }, '… 还有 ' + (s.matchCount - snippetList.length) + ' 处命中')
+                  : null
+              )
+            : null
+        ),
+        confirming
+          ? React.createElement('div', { className: 'ds-ardl-actions' },
+              React.createElement('button', { className: 'ds-ardl-btn primary', disabled: busyId === s.id, onClick: () => doDelete(s.id) }, busyId === s.id ? '删除中…' : '确认删除'),
+              React.createElement('button', { className: 'ds-ardl-btn', disabled: busyId === s.id, onClick: () => setConfirmId(undefined) }, '取消')
+            )
+          : React.createElement('div', { className: 'ds-ardl-actions' },
+              React.createElement('button', { className: 'ds-ardl-btn restore', disabled: busyId === s.id, onClick: () => doRestore(s.id) }, '恢复并打开'),
+              React.createElement('button', { className: 'ds-ardl-btn danger', disabled: busyId === s.id, onClick: () => setConfirmId(s.id) }, '删除')
+            )
+      );
+    };
+
     const body = isBusy && rows.length === 0
       ? React.createElement('div', { className: 'ds-ardl-empty' }, searching ? '搜索中…' : '加载中…')
       : rows.length === 0
         ? React.createElement('div', { className: 'ds-ardl-empty' }, query.trim() ? '无匹配的归档会话。' : '没有已归档的会话。')
-        : rows.map((s) => {
-              const confirming = confirmId === s.id;
-              return React.createElement('div', { key: s.id, className: 'ds-ardl-row' },
-                React.createElement('div', { className: 'ds-ardl-meta' },
-                  React.createElement('div', { className: 'ds-ardl-title' }, titleOf(s)),
-                  React.createElement('div', { className: 'ds-ardl-sub' }, subOf(s)),
-                  s.snippet ? React.createElement('div', { className: 'ds-ardl-snippet', title: s.snippet }, s.snippet) : null
-                ),
-                confirming
-                  ? React.createElement('div', { className: 'ds-ardl-actions' },
-                      React.createElement('button', { className: 'ds-ardl-btn primary', disabled: busyId === s.id, onClick: () => doDelete(s.id) }, busyId === s.id ? '删除中…' : '确认删除'),
-                      React.createElement('button', { className: 'ds-ardl-btn', disabled: busyId === s.id, onClick: () => setConfirmId(undefined) }, '取消')
-                    )
-                  : React.createElement('div', { className: 'ds-ardl-actions' },
-                      React.createElement('button', { className: 'ds-ardl-btn restore', disabled: busyId === s.id, onClick: () => doRestore(s.id) }, '恢复并打开'),
-                      React.createElement('button', { className: 'ds-ardl-btn danger', disabled: busyId === s.id, onClick: () => setConfirmId(s.id) }, '删除')
-                    )
-              );
-            });
+        : groups.map(([ws, items]) =>
+            React.createElement('div', { key: ws, className: 'ds-ardl-group' },
+              React.createElement('div', { className: 'ds-ardl-group-header' },
+                React.createElement('span', { className: 'ds-ardl-group-name' }, ws),
+                React.createElement('span', { className: 'ds-ardl-group-count' }, String(items.length))
+              ),
+              items.map(renderRow)
+            )
+          );
 
     const countText = (() => {
       const q = String(query || '').trim();
@@ -243,7 +279,7 @@ export function apply(ctx) {
         placeholder: '搜索名称 / 目录 / id / 预设 / 会话正文…', value: query,
         onChange: (e) => setQuery(e.target.value),
       }),
-      React.createElement('div', { className: 'ds-ardl-hint' }, '支持全文：输入关键词会检索会话内的用户消息、AI 回复与工具调用内容（FTS5），空输入显示全部归档'),
+      React.createElement('div', { className: 'ds-ardl-hint' }, '支持全文：检索会话内的用户消息、AI 回复与工具调用内容（FTS5），每个会话最多展示 5 条命中，空输入显示全部归档'),
       !loading ? React.createElement('div', { className: 'ds-ardl-count' }, countText + (searching ? '  ·  搜索中…' : '')) : null,
       error ? React.createElement('div', { className: 'ds-ardl-err' }, error) : null,
       React.createElement('div', { className: 'ds-ardl-list' }, body)
