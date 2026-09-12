@@ -12,6 +12,7 @@
  * The client half (src/client/index.js + the `dsh.client` entry) reaches this
  * service through the harness's service/Remote plumbing.
  */
+import { rm } from 'node:fs/promises';
 import { resolveConfig } from './config.js';
 
 /** Plugin identity used by the loader (matches row `id` in cordis.patch.yml). */
@@ -392,20 +393,30 @@ export function apply(ctx) {
       const info = await fs.stat(target);
       if (info === undefined) return { ok: true, alreadyGone: true, stoppedLiveAgent };
 
-      // ShellExecRequest has NO args field: build the full command string and pass
-      // the dir via process.argv[1], avoiding nested-quoting/escaping.
-      const script = "require('fs').rmSync(process.argv[1],{recursive:true,force:true})";
-      const commandLine = 'node -e "' + script + '" ' + JSON.stringify(dir);
-      const spec = shell.resolve({
-        command: commandLine,
-        sandboxPolicy: { mode: config.deleteSandbox, workspaceRoot: dir },
-      });
+      // An unconfined delete runs in-process: routing a pure filesystem removal
+      // through `ctx.shell` costs one full platform-shell spawn per call (a
+      // Windows pwsh start is seconds of latency for a millisecond of rmSync),
+      // and `danger-full-access` means there is no confinement to honor. A
+      // confined request keeps the sandboxed shell path, where the confinement
+      // is the whole point.
+      if (config.deleteSandbox === 'danger-full-access') {
+        await rm(target, { recursive: true, force: true });
+      } else {
+        // ShellExecRequest has NO args field: build the full command string and pass
+        // the dir via process.argv[1], avoiding nested-quoting/escaping.
+        const script = "require('fs').rmSync(process.argv[1],{recursive:true,force:true})";
+        const commandLine = 'node -e "' + script + '" ' + JSON.stringify(dir);
+        const spec = shell.resolve({
+          command: commandLine,
+          sandboxPolicy: { mode: config.deleteSandbox, workspaceRoot: dir },
+        });
 
-      const result = await shell.run(spec);
-      if (result && result.exitCode !== 0) {
-        const raw = result.stderr;
-        const errText = typeof raw === 'string' ? raw : raw ? JSON.stringify(raw) : '';
-        throw new Error('删除命令失败 (exit ' + result.exitCode + '): ' + errText + '  [' + dir + ']');
+        const result = await shell.run(spec);
+        if (result && result.exitCode !== 0) {
+          const raw = result.stderr;
+          const errText = typeof raw === 'string' ? raw : raw ? JSON.stringify(raw) : '';
+          throw new Error('删除命令失败 (exit ' + result.exitCode + '): ' + errText + '  [' + dir + ']');
+        }
       }
 
       const after = await fs.stat(await fs.resolve(dir));
