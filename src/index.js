@@ -27,9 +27,16 @@ export const inject = ['sessionPersistence', 'workspaceRegistry', 'fs', 'shell',
 export function apply(ctx) {
   const { sessionPersistence, workspaceRegistry, fs, shell, sessionQuery } = ctx;
 
+  /**
+   * Normalize one `sessionPersistence.list()` entry to a session header.
+   * dsh returns one snapshot per stored session (`{ header, revision, sizeBytes }`)
+   * in current builds and the bare header in older ones — accept both.
+   */
+  const headerOf = (entry) => (entry && entry.header && entry.header.id !== undefined ? entry.header : entry);
+
   async function listArchived() {
     const archived = workspaceRegistry.archivedSessionIds || [];
-    const headers = await sessionPersistence.list();
+    const headers = (await sessionPersistence.list()).map(headerOf);
     const byId = new Map();
     for (const h of headers) byId.set(h.id, h);
     const present = archived.filter((id) => byId.has(id));
@@ -222,7 +229,7 @@ export function apply(ctx) {
             // run a quick scan, keep sessions not already in FTS results.
             try {
               const ftsIds = new Set(rows.map((r) => r.id));
-              const headers2 = await sessionPersistence.list();
+              const headers2 = (await sessionPersistence.list()).map(headerOf);
               const byId2 = new Map(headers2.map((h) => [h.id, h]));
               const present2 = archived.filter((id) => byId2.has(id) && !ftsIds.has(id));
               if (present2.length > 0) {
@@ -286,7 +293,7 @@ export function apply(ctx) {
       }
 
       // 2) Fallback: backend-independent per-session text scan
-      const headers = await sessionPersistence.list();
+      const headers = (await sessionPersistence.list()).map(headerOf);
       const byId = new Map(headers.map((h) => [h.id, h]));
       const present = archived.filter((id) => byId.has(id));
       const matched = [];
@@ -374,7 +381,7 @@ export function apply(ctx) {
         // registry lookup/cancel is best-effort; fall through to delete
       }
 
-      const headers = await sessionPersistence.list();
+      const headers = (await sessionPersistence.list()).map(headerOf);
       const header = headers.find((h) => h.id === id);
       if (header === undefined) return { ok: true, alreadyGone: true, stoppedLiveAgent };
 
