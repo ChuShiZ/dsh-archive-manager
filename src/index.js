@@ -399,8 +399,11 @@ export function apply(ctx) {
       // and `danger-full-access` means there is no confinement to honor. A
       // confined request keeps the sandboxed shell path, where the confinement
       // is the whole point.
+      // `fs.resolve()` yields a backend target object (`{ targetKey, ... }`)
+      // that only the fs service understands; node:fs needs the host path `dir`,
+      // the same one the shell path below addresses.
       if (config.deleteSandbox === 'danger-full-access') {
-        await rm(target, { recursive: true, force: true });
+        await rm(dir, { recursive: true, force: true });
       } else {
         // ShellExecRequest has NO args field: build the full command string and pass
         // the dir via process.argv[1], avoiding nested-quoting/escaping.
