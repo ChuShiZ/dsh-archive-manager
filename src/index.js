@@ -385,19 +385,27 @@ export function apply(ctx) {
       const info = await fs.stat(target);
       if (info === undefined) return { ok: true, alreadyGone: true, stoppedLiveAgent };
 
-      // ShellExecRequest has NO args field: build the full command string and pass
-      // the dir via process.argv[1], avoiding nested-quoting/escaping.
-      const script = "require('fs').rmSync(process.argv[1],{recursive:true,force:true})";
-      const commandLine = 'node -e "' + script + '" ' + JSON.stringify(dir);
+      // Windows always serves `ctx.shell` through PwshLocalExecutor: dsh-base
+      // disables bash-sandbox on win32 and enables pwsh-sandbox, so a bash-style
+      // `node -e "..."` command line never reaches a bash that would run it.
+      // PowerShell single-quoted literals treat every character except `'` as
+      // literal, so doubling `'` is the only escaping the path needs.
+      const quoted = "'" + String(dir).replace(/'/gu, "''") + "'";
       const spec = shell.resolve({
-        command: commandLine,
+        command: 'Remove-Item -LiteralPath ' + quoted + ' -Recurse -Force -ErrorAction Stop',
+        workdir: dir,
         sandboxPolicy: { mode: config.deleteSandbox, workspaceRoot: dir },
       });
 
-      const result = await shell.run(spec);
+      // `ctx.shell` is the ShellExecutor seam: resolve() -> execute() -> result().
+      // execute() yields a live process handle, not a settled result, so the exit
+      // status must be read from result(); the handle carries no exitCode itself.
+      // ShellRunResult.stderr is a collected {text,truncated} reader, not a string.
+      const handle = await shell.execute(spec);
+      const result = await handle.result();
+      const raw = result && result.stderr;
+      const errText = typeof raw === 'string' ? raw : raw && typeof raw.text === 'string' ? raw.text : '';
       if (result && result.exitCode !== 0) {
-        const raw = result.stderr;
-        const errText = typeof raw === 'string' ? raw : raw ? JSON.stringify(raw) : '';
         throw new Error('删除命令失败 (exit ' + result.exitCode + '): ' + errText + '  [' + dir + ']');
       }
 
