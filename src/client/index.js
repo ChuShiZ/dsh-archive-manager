@@ -19,7 +19,6 @@ const I18N = {
   zh: {
     settingsLabel: '归档会话',
     searchPlaceholder: '搜索名称 / 目录 / id / 预设 / 会话正文…',
-    hint: '支持全文：检索会话内的用户消息、AI 回复与工具调用内容（FTS5），每个会话最多展示 5 条命中，点击命中可展开，空输入显示全部归档',
     chips: { all: '全部', user: '用户消息', assistant: 'AI 回复', tool: '工具调用' },
     countAll: (n) => `共 ${n} 个归档会话`,
     countMatch: (n, mode) => `匹配 ${n} 个${mode ? `（${mode}）` : ''}`,
@@ -54,7 +53,6 @@ const I18N = {
   en: {
     settingsLabel: 'Archived Sessions',
     searchPlaceholder: 'Search name / cwd / id / preset / content…',
-    hint: 'Full-text search over user/assistant/tool messages (FTS5), up to 5 hits per session. Click a hit to expand. Empty shows all.',
     chips: { all: 'All', user: 'User', assistant: 'Assistant', tool: 'Tools' },
     countAll: (n) => `${n} archived sessions`,
     countMatch: (n, mode) => `Matched ${n}${mode ? ` (${mode})` : ''}`,
@@ -89,9 +87,20 @@ const I18N = {
 };
 
 function getLocaleId(ctx) {
+  // Current client locale service (dsh-client-locale): a snapshot store read
+  // through getSnapshot(). All official client plugins use this shape.
+  try {
+    const snap = ctx.locale?.getSnapshot?.();
+    if (snap && typeof snap.active === 'string' && snap.active) {
+      return snap.active.toLowerCase().startsWith('en') ? 'en' : 'zh';
+    }
+  } catch {}
+  // Legacy shape kept for older client runtimes.
   try {
     const snap = ctx.locale?.getLocale?.();
-    if (snap && typeof snap.active === 'string') return snap.active.toLowerCase().startsWith('en') ? 'en' : 'zh';
+    if (snap && typeof snap.active === 'string' && snap.active) {
+      return snap.active.toLowerCase().startsWith('en') ? 'en' : 'zh';
+    }
   } catch {}
   try {
     const lang = (typeof navigator !== 'undefined' && (navigator.language || (navigator.languages && navigator.languages[0]))) || '';
@@ -135,7 +144,6 @@ export function apply(ctx) {
     '.ds-ardl-search{width:100%;box-sizing:border-box;margin-bottom:10px;padding:8px 10px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:13px;outline:none;}',
     '.ds-ardl-search:focus{border-color:var(--dsw-alias-brand-primary);}',
     '.ds-ardl-count{font-size:12px;color:var(--dsw-alias-label-secondary);margin:0 0 8px;}',
-    '.ds-ardl-hint{font-size:11px;color:var(--dsw-alias-label-secondary);margin:0 0 8px;opacity:.8;}',
     '.ds-ardl-list{max-height:62vh;overflow:auto;margin:0;}',
     '.ds-ardl-group{margin-bottom:6px;}',
     '.ds-ardl-group-header{display:flex;align-items:center;justify-content:space-between;padding:8px 8px 4px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);border-bottom:1px solid var(--dsw-alias-border-l2);}',
@@ -210,8 +218,8 @@ export function apply(ctx) {
     React.useEffect(() => {
       const update = () => setLocaleId(getLocaleId(ctx));
       let off1, off2;
-      try { off1 = ctx.on?.('locale/change', update); } catch {}
-      try { off2 = ctx.locale?.subscribe?.(update); } catch {}
+      try { off1 = ctx.locale?.subscribe?.(update); } catch {}
+      try { off2 = ctx.on?.('locale/change', update); } catch {}
       return () => { try { off1?.(); } catch{} try { off2?.(); } catch{} };
     }, []);
     const t = I18N[localeId] || I18N.zh;
@@ -524,7 +532,6 @@ export function apply(ctx) {
               : React.createElement('button', { className: 'ds-ardl-btn danger', disabled: batchBusy, onClick: () => setBatchConfirm(true) }, t.deleteSelected)
           )
         : null,
-      React.createElement('div', { className: 'ds-ardl-hint' }, t.hint),
       !loading ? React.createElement('div', { className: 'ds-ardl-count' }, countText + (searching ? t.searchingSuffix : '')) : null,
       error ? React.createElement('div', { className: 'ds-ardl-err' }, error) : null,
       React.createElement('div', { className: 'ds-ardl-list' }, body)
@@ -553,8 +560,8 @@ export function apply(ctx) {
       } catch {}
     };
     let off1, off2;
-    try { off1 = ctx.on?.('locale/change', updateLabel); } catch {}
-    try { off2 = ctx.locale?.subscribe?.(updateLabel); } catch {}
+    try { off1 = ctx.locale?.subscribe?.(updateLabel); } catch {}
+    try { off2 = ctx.on?.('locale/change', updateLabel); } catch {}
     return () => { try { off1?.(); } catch{} try { off2?.(); } catch{} try { dispose?.(); } catch{} };
   });
 }

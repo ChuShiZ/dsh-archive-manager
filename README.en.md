@@ -8,21 +8,16 @@ English · [中文](./README.md)
 
 A DeepSeek Harness Web GUI plugin for managing **archived** sessions, under **Settings > 归档会话**. The harness's built-in "archive" is one-way: it only hides a session, with no un-archive. This plugin adds browse, restore, and true delete:
 
-- **Browse** — archived sessions grouped by workspace, searchable by title / cwd / id / preset / **full-text content**.
-- **Full-text search** — `sessionQuery` SQLite FTS5 over user/assistant/tool messages; highlighted, keyword-centered snippets, up to 5 hits per session, filterable by type.
+- **Browse** — archived sessions grouped by workspace.
+- **Full-text search** — searches session content: user messages, assistant replies, and tool-call commands and output, plus title / cwd / id / preset matching. Highlighted, keyword-centered snippets, up to 5 hits per session, filterable by type.
 - **Batch ops** — checkboxes + top-bar batch delete; live agents are cancelled before removal.
-- **Preview** — click the title to expand the last 4 dialogue turns (user-AI alternating) without restoring.
+- **Preview** — click the title to expand the last 4 user/assistant messages without restoring.
 - **Restore & open** — un-archive and open, so you can view history and continue the conversation.
 - **Delete** — physically removes the session's log directory. **Irreversible.**
 
 ![Search: type filters + keyword highlighting](assets/screenshots/search-highlight.png)
 
-![Preview: 4-turn dialogue on title click](assets/screenshots/preview-dialog.png)
-
-```
-host:   archive set + persisted title/metadata  --archiveManager service--> browser
-client: Settings page "归档会话" (workspace groups + full-text search + restore & open + delete)
-```
+![Preview: last 4 user/assistant messages on title click](assets/screenshots/preview-dialog.png)
 
 ## Install
 
@@ -30,22 +25,20 @@ client: Settings page "归档会话" (workspace groups + full-text search + rest
 dsh plugin --profile web add @chushiz/dsh-archive-manager
 ```
 
-Restart `dsh web` after install, then find it under **Settings > 归档会话**.
+Refresh the page after installing (Cmd/Ctrl+Shift+R); restart `dsh` if it does not show up. On Desktop, install it from the plugin market in Settings (**设置 → 插件市场**).
 
 ## Compatibility
 
 | dsh version | status |
 | --- | --- |
-| `>= 0.1.0-rc.7` | ✅ supported (FTS5 search + direct service wiring) |
-| `< 0.1.0-rc.7` | ⚠️ unverified (needs `sessionQuery.searchSessions` and the `webServer` carrier) |
+| `0.2.0-rc.2` | ✅ tested locally: list, search and preview work |
+| other versions | ⚠️ not tested |
 
-- Node.js `^22.19 || >=24` (same as dsh)
-- Falls back to per-session scanning without an FTS backend (`openAt: never`); falls back to HTTP API when the service is not proxied to the browser
+## Security
 
-## Permission boundary
-
-- The **host** half reads/writes the workspace registry's **archive set** and **persistence** state: `list` is read-only, `unarchive` reverses an archive, `delete` removes the log directory via a shell command. It never writes logs and registers no model-facing tools.
-- The **client** half registers the `settings.section` page and calls the `archiveManager` service.
+- Delete has no recycle bin: a `node -e` command `rmSync`s that session's own directory (`<sessions>/<workspace>/<session id>/`). **Irreversible.**
+- That command runs in the `danger-full-access` sandbox mode by default (a caller may pass `workspace-write` to tighten it), applies only to **archived** sessions, and cancels any still-running agent for that session first.
+- The web routes `/archive-manager/api/*` use the same trust fence as the host's `/api`: a mandatory Host header (DNS-rebinding defense), cross-site origins refused, an 8 KiB body cap.
 
 ## License
 

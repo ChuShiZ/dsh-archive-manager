@@ -27,9 +27,33 @@ export const inject = ['sessionPersistence', 'workspaceRegistry', 'fs', 'shell',
 export function apply(ctx) {
   const { sessionPersistence, workspaceRegistry, fs, shell, sessionQuery } = ctx;
 
+  /**
+   * Normalize one `sessionPersistence.list()` / `stat()` entry to a SessionHeader.
+   *
+   * DSH >= 0.1.5-rc.1 (including 0.2.0-rc.2) returns snapshots shaped
+   * `{ header, revision, sizeBytes? }`; older backends returned the bare header.
+   * Reading `entry.id` off a snapshot yields `undefined`, which silently emptied
+   * every archived-session join — the root cause of issue #2.
+   */
+  function snapshotHeader(entry) {
+    if (entry === null || typeof entry !== 'object') return undefined;
+    const header = entry.header;
+    return header !== null && typeof header === 'object' ? header : entry;
+  }
+
+  /** `list()` snapshots → headers, order preserved, unusable entries dropped. */
+  function headersOf(snapshots) {
+    const headers = [];
+    for (const snap of snapshots || []) {
+      const header = snapshotHeader(snap);
+      if (header && header.id) headers.push(header);
+    }
+    return headers;
+  }
+
   async function listArchived() {
     const archived = workspaceRegistry.archivedSessionIds || [];
-    const headers = await sessionPersistence.list();
+    const headers = headersOf(await sessionPersistence.list());
     const byId = new Map();
     for (const h of headers) byId.set(h.id, h);
     const present = archived.filter((id) => byId.has(id));
@@ -222,7 +246,7 @@ export function apply(ctx) {
             // run a quick scan, keep sessions not already in FTS results.
             try {
               const ftsIds = new Set(rows.map((r) => r.id));
-              const headers2 = await sessionPersistence.list();
+              const headers2 = headersOf(await sessionPersistence.list());
               const byId2 = new Map(headers2.map((h) => [h.id, h]));
               const present2 = archived.filter((id) => byId2.has(id) && !ftsIds.has(id));
               if (present2.length > 0) {
@@ -286,7 +310,7 @@ export function apply(ctx) {
       }
 
       // 2) Fallback: backend-independent per-session text scan
-      const headers = await sessionPersistence.list();
+      const headers = headersOf(await sessionPersistence.list());
       const byId = new Map(headers.map((h) => [h.id, h]));
       const present = archived.filter((id) => byId.has(id));
       const matched = [];
@@ -336,6 +360,12 @@ export function apply(ctx) {
     async unarchive(id) {
       if (!id) throw new Error('缺少会话 id');
       const reg = ctx.workspaceRegistry;
+      // Public API since dsh-workspace 0.2.0-rc.2; older builds only expose the
+      // registry-global state write, which stays as the fallback.
+      if (typeof reg.unarchiveSession === 'function') {
+        await reg.unarchiveSession(id);
+        return { ok: true };
+      }
       const run = async () => {
         const state = reg.requireState();
         if (!state.archivedSessionIds.includes(id)) return;
@@ -374,8 +404,15 @@ export function apply(ctx) {
         // registry lookup/cancel is best-effort; fall through to delete
       }
 
-      const headers = await sessionPersistence.list();
-      const header = headers.find((h) => h.id === id);
+      // Prefer the id-addressed observation (session-persistence seam `stat`);
+      // fall back to scanning `list()` snapshots on older backends.
+      let header;
+      if (typeof sessionPersistence.stat === 'function') {
+        header = snapshotHeader(await sessionPersistence.stat(id));
+      }
+      if (header === undefined) {
+        header = headersOf(await sessionPersistence.list()).find((h) => h.id === id);
+      }
       if (header === undefined) return { ok: true, alreadyGone: true, stoppedLiveAgent };
 
       const loc = sessionPersistence.locate({ cwd: header.cwd, id });
@@ -394,11 +431,27 @@ export function apply(ctx) {
         sandboxPolicy: { mode: config.deleteSandbox, workspaceRoot: dir },
       });
 
-      const result = await shell.run(spec);
-      if (result && result.exitCode !== 0) {
+      // dsh-shell 0.2.0-rc.x dropped `run()`: `execute(spec)` resolves a live
+      // execution handle whose `result()` carries
+      // `{ exitCode, signal, stdout: { text }, stderr: { text }, sandbox }`.
+      // Older builds still expose the single-shot `run(spec)`; try both.
+      let result;
+      if (typeof shell.execute === 'function') {
+        const execution = await shell.execute(spec);
+        result = await execution.result();
+      } else if (typeof shell.run === 'function') {
+        result = await shell.run(spec);
+      } else {
+        throw new Error('shell 服务既不支持 execute() 也不支持 run()，无法执行删除  [' + dir + ']');
+      }
+
+      if (result && (result.exitCode !== 0 || result.signal)) {
         const raw = result.stderr;
-        const errText = typeof raw === 'string' ? raw : raw ? JSON.stringify(raw) : '';
-        throw new Error('删除命令失败 (exit ' + result.exitCode + '): ' + errText + '  [' + dir + ']');
+        const errText = typeof raw === 'string'
+          ? raw
+          : raw && typeof raw.text === 'string' ? raw.text : raw ? JSON.stringify(raw) : '';
+        const status = result.signal ? 'signal ' + result.signal : 'exit ' + result.exitCode;
+        throw new Error('删除命令失败 (' + status + '): ' + errText + '  [' + dir + ']');
       }
 
       const after = await fs.stat(await fs.resolve(dir));
