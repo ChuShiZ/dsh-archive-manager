@@ -64,13 +64,13 @@ const snap = (id, cwd) => ({ header: { id, cwd, createdAt: 5, agentPreset: 'std'
 
 // ── 3. delete(): stat() lookup, dirname location, shell.execute + result() ──
 {
-  const calls = { execute: 0, run: 0, removed: [] };
+  const calls = { execute: 0, run: 0, removed: [], unarchived: 0 };
   let gone = false;
   const ctx = makeCtx({
     list: async () => [],
     stat: async (id) => (gone ? undefined : snap(id, 'D:\\work\\proj')),
     locate: (meta) => ({ kind: 'jsonl', path: 'C:\\sessions\\proj\\' + meta.id + '\\v4.jsonl.zstd' }),
-    registry: { archivedSessionIds: ['s1'] },
+    registry: { archivedSessionIds: ['s1'], unarchiveSession() { calls.unarchived++; return Promise.resolve(); } },
     fs: { resolve: async (p) => ({ key: p }), stat: async () => (gone ? undefined : { size: 1 }) },
     shell: {
       resolve: (req) => ({ ...req, resolved: true }),
@@ -90,6 +90,7 @@ const snap = (id, cwd) => ({ header: { id, cwd, createdAt: 5, agentPreset: 'std'
   assert.equal(calls.execute, 1, 'delete() must use 0.2.0-rc.x shell.execute()');
   assert.equal(calls.run, 0, 'the removed shell.run() must not be called');
   assert.equal(res.alreadyGone, undefined);
+  assert.equal(calls.unarchived, 1, 'delete() must drop the id from the archive set');
   console.log('ok  3. delete() uses shell.execute() + result() and verifies removal');
 }
 
@@ -164,6 +165,24 @@ const snap = (id, cwd) => ({ header: { id, cwd, createdAt: 5, agentPreset: 'std'
   await ctx.archiveManager.unarchive('s1');
   assert.deepEqual(written.archivedSessionIds, ['s2']);
   console.log('ok  7. unarchive() falls back to the registry state write');
+}
+
+// ── 8. delete() on an already-removed log still clears the archive entry ────
+{
+  let unarchived = 0;
+  const ctx = makeCtx({
+    list: async () => [],
+    stat: async () => undefined,
+    registry: { archivedSessionIds: ['ghost'], unarchiveSession() { unarchived++; return Promise.resolve(); } },
+    fs: { resolve: async (p) => ({ key: p }), stat: async () => undefined },
+    shell: {},
+  });
+  apply(ctx);
+  const res = await ctx.archiveManager.delete('ghost');
+  assert.equal(res.ok, true);
+  assert.equal(res.alreadyGone, true);
+  assert.equal(unarchived, 1, 'a ghost id must be dropped from the archive set');
+  console.log('ok  8. delete() clears the archive entry when the log is already gone');
 }
 
 console.log('\nALL SMOKE TESTS PASSED');

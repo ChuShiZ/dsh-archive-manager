@@ -404,6 +404,20 @@ export function apply(ctx) {
         // registry lookup/cancel is best-effort; fall through to delete
       }
 
+      // Deleting the log must also drop the id from the archive set. DSH's own
+      // sidebar renders every archived id as an "已归档对话暂时无法查看" row even
+      // after its log directory is gone (title/projection caches keep the label),
+      // and the harness's built-in archive is one-way — so a leftover id becomes a
+      // ghost the user cannot clear from either UI. Dropping an id can never
+      // introduce an unknown referent, so this is always safe.
+      const dropFromArchive = async () => {
+        try {
+          await service.unarchive(id);
+        } catch {
+          // best effort: the files are already gone; a leftover id only leaves a ghost row
+        }
+      };
+
       // Prefer the id-addressed observation (session-persistence seam `stat`);
       // fall back to scanning `list()` snapshots on older backends.
       let header;
@@ -413,14 +427,20 @@ export function apply(ctx) {
       if (header === undefined) {
         header = headersOf(await sessionPersistence.list()).find((h) => h.id === id);
       }
-      if (header === undefined) return { ok: true, alreadyGone: true, stoppedLiveAgent };
+      if (header === undefined) {
+        await dropFromArchive();
+        return { ok: true, alreadyGone: true, stoppedLiveAgent };
+      }
 
       const loc = sessionPersistence.locate({ cwd: header.cwd, id });
       const dir = String(loc.path).replace(/[\\/][^\\/]*$/, '');
 
       const target = await fs.resolve(dir);
       const info = await fs.stat(target);
-      if (info === undefined) return { ok: true, alreadyGone: true, stoppedLiveAgent };
+      if (info === undefined) {
+        await dropFromArchive();
+        return { ok: true, alreadyGone: true, stoppedLiveAgent };
+      }
 
       // ShellExecRequest has NO args field: build the full command string and pass
       // the dir via process.argv[1], avoiding nested-quoting/escaping.
@@ -458,6 +478,8 @@ export function apply(ctx) {
       if (after !== undefined) {
         throw new Error('目录删除后仍存在（可能被占用或沙箱限制）: ' + dir);
       }
+
+      await dropFromArchive();
       return { ok: true, stoppedLiveAgent };
     },
 
