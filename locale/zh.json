@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "dsh-archive-manager",
-    "description": "浏览已归档会话：恢复后继续对话，或彻底删除其日志目录。"
+    "description": "dsh归档会话管理"
   }
 }
