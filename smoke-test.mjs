@@ -64,13 +64,21 @@ const snap = (id, cwd) => ({ header: { id, cwd, createdAt: 5, agentPreset: 'std'
 
 // ── 3. delete(): stat() lookup, dirname location, shell.execute + result() ──
 {
-  const calls = { execute: 0, run: 0, removed: [], unarchived: 0 };
+  const calls = { execute: 0, run: 0, removed: [], unarchived: 0, detached: 0, resolvedPath: undefined };
   let gone = false;
   const ctx = makeCtx({
     list: async () => [],
     stat: async (id) => (gone ? undefined : snap(id, 'D:\\work\\proj')),
     locate: (meta) => ({ kind: 'jsonl', path: 'C:\\sessions\\proj\\' + meta.id + '\\v4.jsonl.zstd' }),
-    registry: { archivedSessionIds: ['s1'], unarchiveSession() { calls.unarchived++; return Promise.resolve(); } },
+    registry: {
+      archivedSessionIds: ['s1'],
+      unarchiveSession() { calls.unarchived++; return Promise.resolve(); },
+      resolveByPath(p) {
+        calls.resolvedPath = p;
+        return Promise.resolve({ detachSession() { calls.detached++; return Promise.resolve(); } });
+      },
+      list() { return []; },
+    },
     fs: { resolve: async (p) => ({ key: p }), stat: async () => (gone ? undefined : { size: 1 }) },
     shell: {
       resolve: (req) => ({ ...req, resolved: true }),
@@ -91,6 +99,8 @@ const snap = (id, cwd) => ({ header: { id, cwd, createdAt: 5, agentPreset: 'std'
   assert.equal(calls.run, 0, 'the removed shell.run() must not be called');
   assert.equal(res.alreadyGone, undefined);
   assert.equal(calls.unarchived, 1, 'delete() must drop the id from the archive set');
+  assert.equal(calls.detached, 1, 'delete() must detach the id from its workspace membership');
+  assert.equal(calls.resolvedPath, 'D:\\work\\proj', 'the owning workspace is resolved from the session cwd');
   console.log('ok  3. delete() uses shell.execute() + result() and verifies removal');
 }
 
@@ -167,13 +177,18 @@ const snap = (id, cwd) => ({ header: { id, cwd, createdAt: 5, agentPreset: 'std'
   console.log('ok  7. unarchive() falls back to the registry state write');
 }
 
-// ── 8. delete() on an already-removed log still clears the archive entry ────
+// ── 8. delete() on an already-removed log still clears both references ──────
 {
   let unarchived = 0;
+  let detached = 0;
   const ctx = makeCtx({
     list: async () => [],
     stat: async () => undefined,
-    registry: { archivedSessionIds: ['ghost'], unarchiveSession() { unarchived++; return Promise.resolve(); } },
+    registry: {
+      archivedSessionIds: ['ghost'],
+      unarchiveSession() { unarchived++; return Promise.resolve(); },
+      list() { return [{ sessionIds: ['ghost'], detachSession() { detached++; return Promise.resolve(); } }]; },
+    },
     fs: { resolve: async (p) => ({ key: p }), stat: async () => undefined },
     shell: {},
   });
@@ -182,7 +197,8 @@ const snap = (id, cwd) => ({ header: { id, cwd, createdAt: 5, agentPreset: 'std'
   assert.equal(res.ok, true);
   assert.equal(res.alreadyGone, true);
   assert.equal(unarchived, 1, 'a ghost id must be dropped from the archive set');
-  console.log('ok  8. delete() clears the archive entry when the log is already gone');
+  assert.equal(detached, 1, 'a ghost id must be detached from its workspace membership');
+  console.log('ok  8. delete() clears both references when the log is already gone');
 }
 
 console.log('\nALL SMOKE TESTS PASSED');

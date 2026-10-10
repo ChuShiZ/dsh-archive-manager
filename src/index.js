@@ -404,17 +404,47 @@ export function apply(ctx) {
         // registry lookup/cancel is best-effort; fall through to delete
       }
 
-      // Deleting the log must also drop the id from the archive set. DSH's own
-      // sidebar renders every archived id as an "已归档对话暂时无法查看" row even
-      // after its log directory is gone (title/projection caches keep the label),
-      // and the harness's built-in archive is one-way — so a leftover id becomes a
-      // ghost the user cannot clear from either UI. Dropping an id can never
-      // introduce an unknown referent, so this is always safe.
-      const dropFromArchive = async () => {
+      // Two durable leftovers outlive the log directory, and each one leaves a row
+      // the user cannot get rid of:
+      //  - the archive set keeps the id, so DSH keeps rendering it as an archived
+      //    session ("已归档对话暂时无法查看") although its log is gone, and the
+      //    built-in archive is one-way;
+      //  - the workspace's ordered membership keeps the id until the registry's next
+      //    mutation or a restart prunes it, which keeps the sidebar row.
+      // Clear both, best effort: an id naming no stored session is harmless in the
+      // archive set, and the entity's own write path also prunes stale ids.
+      const cleanupAfterRemoval = async (cwd) => {
         try {
           await service.unarchive(id);
         } catch {
-          // best effort: the files are already gone; a leftover id only leaves a ghost row
+          // best effort: a leftover id only leaves a ghost row
+        }
+        // The workspace's ordered membership still names the session until the
+        // registry's next mutation or a restart prunes it, which keeps a sidebar row.
+        // Resolve the owning workspace from the session's own cwd and detach the id;
+        // `sessionIds` is filtered on read (its path lookup can hide the very id we
+        // want to drop), so it is only the fallback, never the gate.
+        try {
+          let target;
+          if (typeof workspaceRegistry.resolveByPath === 'function' && cwd) {
+            try {
+              target = await workspaceRegistry.resolveByPath(cwd);
+            } catch {
+              // a cwd that no longer resolves falls through to the scan below
+            }
+          }
+          if (target === undefined && typeof workspaceRegistry.list === 'function') {
+            for (const ws of workspaceRegistry.list() || []) {
+              const ids = ws && ws.sessionIds;
+              if (Array.isArray(ids) && ids.includes(id)) {
+                target = ws;
+                break;
+              }
+            }
+          }
+          if (target && typeof target.detachSession === 'function') await target.detachSession(id);
+        } catch {
+          // best effort: the row clears on the next restart anyway
         }
       };
 
@@ -428,7 +458,7 @@ export function apply(ctx) {
         header = headersOf(await sessionPersistence.list()).find((h) => h.id === id);
       }
       if (header === undefined) {
-        await dropFromArchive();
+        await cleanupAfterRemoval();
         return { ok: true, alreadyGone: true, stoppedLiveAgent };
       }
 
@@ -438,7 +468,7 @@ export function apply(ctx) {
       const target = await fs.resolve(dir);
       const info = await fs.stat(target);
       if (info === undefined) {
-        await dropFromArchive();
+        await cleanupAfterRemoval(header.cwd);
         return { ok: true, alreadyGone: true, stoppedLiveAgent };
       }
 
@@ -479,7 +509,7 @@ export function apply(ctx) {
         throw new Error('目录删除后仍存在（可能被占用或沙箱限制）: ' + dir);
       }
 
-      await dropFromArchive();
+      await cleanupAfterRemoval(header.cwd);
       return { ok: true, stoppedLiveAgent };
     },
 
