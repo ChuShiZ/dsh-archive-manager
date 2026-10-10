@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-archive-manager",
+    "description": "Browse archived sessions: restore one to keep chatting, or hard-delete its log directory."
+  }
+}

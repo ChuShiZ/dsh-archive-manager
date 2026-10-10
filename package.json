@@ -1,6 +1,6 @@
 {
   "name": "@chushiz/dsh-archive-manager",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "DSH profile-bundle plugin: browse archived sessions, restore (un-archive) one to continue the conversation, or hard-delete its on-disk JSONL log directory. Integrates into the Settings panel.",
   "type": "module",
   "publishConfig": {
@@ -19,6 +19,7 @@
       "default": "./lib/client.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
   },
   "dsh": {
@@ -38,6 +39,7 @@
   "files": [
     "src",
     "lib",
+    "locale",
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
