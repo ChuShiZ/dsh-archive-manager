@@ -3,8 +3,9 @@
  *
  * A Cordis plugin row (see cordis.patch.yml) that provides the `archiveManager`
  * service:
- *   - list()      archived sessions still in persistence (ghosts dropped), with
- *                 folded titles via sessionQuery.
+ *   - list()      archived sessions still in persistence (ghosts dropped); fast
+ *                 (headers only), with titles served from an in-memory cache.
+ *   - titles()    fold titles for given ids (one full-log read each, cached).
  *   - unarchive() remove an id from the durable workspace archive set.
  *   - delete()    truly remove the archived session's on-disk JSONL log dir.
  *
@@ -12,10 +13,23 @@
  * The client half (src/client/index.js + the `dsh.client` entry) reaches this
  * service through the harness's service/Remote plumbing.
  */
-import { resolveConfig } from './config.js';
+import Schema from '@deepseek-ai/schemastery';
+import { defaultConfig, resolveConfig } from './config.js';
 
-/** Plugin identity used by the loader (matches row `id` in cordis.patch.yml). */
-export const id = 'archive-manager';
+/** Plugin identity (Cordis/docs convention: `name`; matches the loader row id). */
+export const name = 'archive-manager';
+
+/** Legacy module identity kept for older harness builds that read `id`. */
+export const id = name;
+
+/**
+ * Plugin config schema: Cordis validates the row's `config` and fills defaults.
+ */
+export const Config = Schema.object({
+  deleteSandbox: Schema.union(['danger-full-access', 'workspace-write']).default(defaultConfig.deleteSandbox),
+  warmTitles: Schema.boolean().default(defaultConfig.warmTitles),
+  warmDelayMs: Schema.number().min(0).max(60000).step(500).default(defaultConfig.warmDelayMs),
+});
 
 /** Hard dependencies on harness services. `agents` is optional (best-effort live-agent stop before delete). */
 export const inject = ['sessionPersistence', 'workspaceRegistry', 'fs', 'shell', 'sessionQuery'];
@@ -24,7 +38,8 @@ export const inject = ['sessionPersistence', 'workspaceRegistry', 'fs', 'shell',
  * The Cordis plugin. `apply(ctx)` runs once the injected services exist.
  * @param {import('@deepseek-ai/cordis').Context} ctx
  */
-export function apply(ctx) {
+export function apply(ctx, config) {
+  const settings = resolveConfig(config);
   const { sessionPersistence, workspaceRegistry, fs, shell, sessionQuery } = ctx;
 
   /**
@@ -51,6 +66,83 @@ export function apply(ctx) {
     return headers;
   }
 
+  // ── Title cache ────────────────────────────────────────────────────────
+  // Folding a title reads the session's WHOLE event log: on a real profile one
+  // archived log decompresses to ~19 MB and costs ~1s. Titles must therefore
+  // never block the first paint: list() serves this cache and reports the ids
+  // that still need a title, and the client asks for those through titles(ids)
+  // after the rows are already on screen.
+  const TITLE_CACHE_LIMIT = 500;
+  const titleCache = new Map(); // id -> folded title ('' = log has no title event)
+  const titlePending = new Map(); // id -> Promise, dedupes concurrent reads
+  const titleEpoch = new Map(); // id -> generation, bumped when a title is forgotten
+  let listInflight = null;
+
+  function cachedTitle(id) {
+    const title = titleCache.get(id);
+    return typeof title === 'string' ? title : '';
+  }
+
+  function forgetTitle(id) {
+    titleCache.delete(id);
+    titleEpoch.set(id, (titleEpoch.get(id) || 0) + 1);
+  }
+
+  /** Fold the given ids' titles, reusing cached values; resolves { id: title }. */
+  async function readTitles(ids) {
+    const wanted = [];
+    const seen = new Set();
+    for (const raw of ids || []) {
+      const id = String(raw || '');
+      if (!id || seen.has(id) || titleCache.has(id)) continue;
+      seen.add(id);
+      wanted.push(id);
+    }
+    const titles = {};
+    if (wanted.length === 0) return titles;
+
+    const waits = [];
+    const fresh = [];
+    for (const id of wanted) {
+      const pending = titlePending.get(id);
+      if (pending) waits.push(pending);
+      else fresh.push(id);
+    }
+    if (fresh.length > 0) {
+      const run = (async () => {
+        const epochs = new Map(fresh.map((id) => [id, titleEpoch.get(id) || 0]));
+        try {
+          const snaps = await sessionQuery.readTitleSnapshots(fresh);
+          for (const r of snaps) {
+            if (!r || r.status !== 'fulfilled') continue;
+            // A title forgotten (unarchive/delete) while the log was being read
+            // must not be cached again by this stale observation.
+            if ((titleEpoch.get(r.sessionId) || 0) !== (epochs.get(r.sessionId) || 0)) continue;
+            const folded = r.value && r.value.title;
+            titleCache.set(r.sessionId, folded && typeof folded.title === 'string' ? folded.title : '');
+          }
+        } catch (_e) {
+          /* titles stay missing; retried on the next open */
+        } finally {
+          for (const id of fresh) titlePending.delete(id);
+        }
+      })();
+      for (const id of fresh) titlePending.set(id, run);
+      waits.push(run);
+    }
+    await Promise.all(waits);
+    for (const id of wanted) {
+      if (titleCache.has(id)) titles[id] = cachedTitle(id);
+    }
+    while (titleCache.size > TITLE_CACHE_LIMIT) {
+      const oldest = titleCache.keys().next().value;
+      if (oldest === undefined) break;
+      titleCache.delete(oldest);
+      titleEpoch.delete(oldest);
+    }
+    return titles;
+  }
+
   async function listArchived() {
     const archived = workspaceRegistry.archivedSessionIds || [];
     const headers = headersOf(await sessionPersistence.list());
@@ -58,26 +150,11 @@ export function apply(ctx) {
     for (const h of headers) byId.set(h.id, h);
     const present = archived.filter((id) => byId.has(id));
 
-    const titles = new Map();
-    if (present.length > 0) {
-      try {
-        const snaps = await sessionQuery.readTitleSnapshots(present);
-        for (const r of snaps) {
-          if (r.status === 'fulfilled') {
-            const t = r.value && r.value.title;
-            titles.set(r.sessionId, t && typeof t.title === 'string' ? t.title : '');
-          }
-        }
-      } catch (_e) {
-        /* titles are optional; fall back to cwd/id */
-      }
-    }
-
     const rows = present.map((id) => {
       const h = byId.get(id);
       return {
         id,
-        title: titles.get(id) || '',
+        title: cachedTitle(id),
         cwd: h.cwd || '',
         workspace: basenameOf(h.cwd),
         createdAt: h.createdAt || 0,
@@ -85,7 +162,9 @@ export function apply(ctx) {
       };
     });
     rows.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    return { rows, byId, present };
+    // Newest rows first, so the client fills the visible titles first.
+    const titlesMissing = rows.filter((row) => !titleCache.has(row.id)).map((row) => row.id);
+    return { rows, byId, present, titlesMissing };
   }
 
   function basenameOf(p) {
@@ -147,11 +226,55 @@ export function apply(ctx) {
     return segments.length > 0 ? segments : [{ text: window, hit: false }];
   }
 
+  // ── Search result cache ────────────────────────────────────────────────
+  // A full-text scan rereads every archived log, so identical queries (chip
+  // toggles, clearing and retyping, reopening the panel) are served from memory.
+  const SEARCH_CACHE_TTL_MS = 60 * 1000;
+  const SEARCH_CACHE_LIMIT = 20;
+  const searchCache = new Map();
+
+  function rememberSearch(key, result) {
+    searchCache.delete(key);
+    searchCache.set(key, { time: Date.now(), result });
+    while (searchCache.size > SEARCH_CACHE_LIMIT) {
+      const oldest = searchCache.keys().next().value;
+      if (oldest === undefined) break;
+      searchCache.delete(oldest);
+    }
+    return result;
+  }
+
+  function invalidateSearch() {
+    searchCache.clear();
+  }
+
   const service = {
-    /** List archived sessions that still exist in persistence. */
+    /**
+     * List archived sessions that still exist in persistence.
+     * Fast: reads stored headers only, serves titles from the in-memory cache and
+     * reports ids whose title still has to be folded through titles().
+     */
     async list() {
-      const { rows } = await listArchived();
-      return { rows };
+      if (listInflight === null) {
+        listInflight = listArchived()
+          .then(({ rows, titlesMissing }) => ({ rows, titlesMissing }))
+          .finally(() => { listInflight = null; });
+      }
+      return listInflight;
+    },
+
+    /**
+     * Fold titles for the given archived ids.
+     * Expensive (one full-log read per uncached id) and cached per id; the client
+     * calls it after the rows are painted, in small batches.
+     */
+    async titles(ids) {
+      const archived = new Set(workspaceRegistry.archivedSessionIds || []);
+      const wanted = (Array.isArray(ids) ? ids : [])
+        .map((id) => String(id || ''))
+        .filter((id) => id && archived.has(id))
+        .slice(0, 100);
+      return { titles: await readTitles(wanted) };
     },
 
     /**
@@ -162,8 +285,10 @@ export function apply(ctx) {
     async search(opts) {
       const query = typeof opts === 'string' ? opts : (opts && opts.query) || '';
       const limit = opts && typeof opts === 'object' && Number.isFinite(opts.limit) ? opts.limit : 50;
-      const perSession = opts && typeof opts === 'object' && Number.isFinite(opts.perSession) ? Math.max(1, Math.min(10, opts.perSession)) : 5;
+      const perSession = opts && typeof opts === 'object' && Number.isFinite(opts.perSession) ? Math.max(1, Math.min(10, opts.perSession)) : 3;
       const types = opts && typeof opts === 'object' && Array.isArray(opts.types) ? opts.types.filter((t) => typeof t === 'string' && t) : [];
+      const signal = opts && typeof opts === 'object' ? opts.signal : undefined;
+      const throwIfAborted = () => { if (signal && signal.aborted) throw new Error('搜索已取消'); };
       const trimmed = String(query || '').trim();
       if (!trimmed) {
         const { rows } = await listArchived();
@@ -172,10 +297,20 @@ export function apply(ctx) {
       const archived = workspaceRegistry.archivedSessionIds || [];
       if (archived.length === 0) return { rows: [], query: trimmed };
 
+      const cacheKey = [trimmed, types.join(','), String(limit), String(perSession), archived.join('\u0000')].join('\u0001');
+      const cached = searchCache.get(cacheKey);
+      if (cached !== undefined && Date.now() - cached.time < SEARCH_CACHE_TTL_MS) {
+        searchCache.delete(cacheKey);
+        searchCache.set(cacheKey, cached);
+        return cached.result;
+      }
+      throwIfAborted();
+
       const keywordRegex = buildKeywordRegex(trimmed);
+      // Display-only segments; the client derives the tooltip from them, so the
+      // duplicate fullText/snippet/bestMatch fields stay out of the payload.
       const toHit = (text, time, type) => ({
         segments: buildSnippetSegments(text, keywordRegex),
-        fullText: normalizeForDisplay(text),
         time: time || 0,
         type: type || '',
       });
@@ -183,6 +318,7 @@ export function apply(ctx) {
       // 1) Prefer FTS5 cross-session search (sqlite backend)
       if (sessionQuery && typeof sessionQuery.searchSessions === 'function') {
         try {
+          throwIfAborted();
           const res = await sessionQuery.searchSessions({
             query: trimmed,
             limit,
@@ -229,10 +365,8 @@ export function apply(ctx) {
               workspace: basenameOf(h.cwd),
               createdAt: h.createdAt || 0,
               agentPreset: h.agentPreset || '',
-              snippet: snippets[0]?.segments.map((s) => s.text).join('') || '',
               snippets,
               matchCount: snippets.length,
-              bestMatch: best,
             };
           });
           // FTS5 unicode61 won't substring-match inside CJK token runs:
@@ -282,20 +416,18 @@ export function apply(ctx) {
                     workspace: basenameOf(m.header.cwd),
                     createdAt: m.header.createdAt || 0,
                     agentPreset: m.header.agentPreset || '',
-                    snippet: m.hits[0]?.segments.map((s) => s.text).join('') || '',
                     snippets: m.hits,
                     matchCount: m.total,
-                    bestMatch: m.hits[0] || null,
                   }));
                   // Append scan-found sessions after FTS-ranked ones
                   const merged = [...rows, ...extraRows];
                   merged.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
                   const sliced = merged.slice(0, limit);
-                  return { rows: sliced, query: trimmed, nextCursor: res.nextCursor || null, mode: sliced.length > rows.length ? 'fts+scan' : 'fts', scanSupplement: extraRows.length };
+                  return rememberSearch(cacheKey, { rows: sliced, query: trimmed, nextCursor: res.nextCursor || null, mode: sliced.length > rows.length ? 'fts+scan' : 'fts', scanSupplement: extraRows.length });
                 }
               }
             } catch {}
-            return { rows, query: trimmed, nextCursor: res.nextCursor || null, mode: 'fts' };
+            return rememberSearch(cacheKey, { rows, query: trimmed, nextCursor: res.nextCursor || null, mode: 'fts' });
           }
         } catch (e) {
           const code = e && e.code ? String(e.code) : '';
@@ -310,6 +442,7 @@ export function apply(ctx) {
       }
 
       // 2) Fallback: backend-independent per-session text scan
+      throwIfAborted();
       const headers = headersOf(await sessionPersistence.list());
       const byId = new Map(headers.map((h) => [h.id, h]));
       const present = archived.filter((id) => byId.has(id));
@@ -318,6 +451,7 @@ export function apply(ctx) {
       let cursor = 0;
       async function worker() {
         while (cursor < present.length) {
+          if (signal && signal.aborted) return;
           const idx = cursor++;
           const id = present[idx];
           try {
@@ -332,6 +466,7 @@ export function apply(ctx) {
         }
       }
       await Promise.all(Array.from({ length: Math.min(concurrency, present.length) }, () => worker()));
+      throwIfAborted();
       const titles2 = new Map();
       if (matched.length > 0) {
         try {
@@ -346,14 +481,12 @@ export function apply(ctx) {
         workspace: basenameOf(m.header.cwd),
         createdAt: m.header.createdAt || 0,
         agentPreset: m.header.agentPreset || '',
-        snippet: m.hits[0]?.segments.map((s) => s.text).join('') || '',
         snippets: m.hits,
         matchCount: m.total,
-        bestMatch: m.hits[0] || null,
       }));
       rows.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
       const sliced = rows.slice(0, limit);
-      return { rows: sliced, query: trimmed, mode: 'scan' };
+      return rememberSearch(cacheKey, { rows: sliced, query: trimmed, mode: 'scan' });
     },
 
     /** Remove an id from the durable archive set (reverse of archiveSession). */
@@ -364,6 +497,8 @@ export function apply(ctx) {
       // registry-global state write, which stays as the fallback.
       if (typeof reg.unarchiveSession === 'function') {
         await reg.unarchiveSession(id);
+        forgetTitle(id);
+        invalidateSearch();
         return { ok: true };
       }
       const run = async () => {
@@ -376,13 +511,15 @@ export function apply(ctx) {
       };
       if (typeof reg.enqueueOperation === 'function') await reg.enqueueOperation(run);
       else await run();
+      forgetTitle(id);
+      invalidateSearch();
       return { ok: true };
     },
 
     /** Truly delete the archived session's on-disk JSONL log directory. */
     async delete(id, configOverride) {
       if (!id) throw new Error('缺少会话 id');
-      const config = resolveConfig(configOverride);
+      const deleteConfig = resolveConfig(configOverride, settings);
 
       const archived = workspaceRegistry.archivedSessionIds || [];
       if (!archived.includes(id)) {
@@ -394,7 +531,9 @@ export function apply(ctx) {
       // quiescence so no process still holds the JSONL directory open.
       let stoppedLiveAgent = false;
       try {
-        const agent = ctx.agents?.get ? ctx.agents.get(id) : undefined;
+        // `agents` is optional (not in `inject`): read it through ctx.get().
+        const agents = typeof ctx.get === 'function' ? ctx.get('agents') : ctx.agents;
+        const agent = agents && typeof agents.get === 'function' ? agents.get(id) : undefined;
         if (agent) {
           agent.cancel({ kind: 'disposed' });
           if (typeof agent.whenIdle === 'function') await agent.whenIdle();
@@ -414,6 +553,8 @@ export function apply(ctx) {
       // Clear both, best effort: an id naming no stored session is harmless in the
       // archive set, and the entity's own write path also prunes stale ids.
       const cleanupAfterRemoval = async (cwd) => {
+        forgetTitle(id);
+        invalidateSearch();
         try {
           await service.unarchive(id);
         } catch {
@@ -462,7 +603,16 @@ export function apply(ctx) {
         return { ok: true, alreadyGone: true, stoppedLiveAgent };
       }
 
+      // 'locate' is a JSONL-backend refusal hook, not part of the documented
+      // persistence contract (create/open/stat/list + SessionHandle), so another
+      // backend may not expose it. Fail with a clear message, never a TypeError.
+      if (typeof sessionPersistence.locate !== 'function') {
+        throw new Error('当前持久化后端不提供日志目录定位（删除需要 JSONL 后端的 locate 能力）: ' + id);
+      }
       const loc = sessionPersistence.locate({ cwd: header.cwd, id });
+      if (!loc || typeof loc.path !== 'string' || loc.path.length === 0) {
+        throw new Error('持久化后端未返回可用的日志路径，无法删除: ' + id);
+      }
       const dir = String(loc.path).replace(/[\\/][^\\/]*$/, '');
 
       const target = await fs.resolve(dir);
@@ -476,9 +626,16 @@ export function apply(ctx) {
       // the dir via process.argv[1], avoiding nested-quoting/escaping.
       const script = "require('fs').rmSync(process.argv[1],{recursive:true,force:true})";
       const commandLine = 'node -e "' + script + '" ' + JSON.stringify(dir);
+      // 'sandboxPolicy' is not part of the public ShellExecRequest type, but the
+      // bundled bash/pwsh sandbox executors honor
+      // 'request.sandboxPolicy ?? ctx.sandboxPolicy.resolve()'. The session log
+      // lives outside the workspace, so deletion needs the full-access override.
+      if (typeof shell.resolve !== 'function') {
+        throw new Error('shell 服务不支持 resolve()，无法执行删除  [' + dir + ']');
+      }
       const spec = shell.resolve({
         command: commandLine,
-        sandboxPolicy: { mode: config.deleteSandbox, workspaceRoot: dir },
+        sandboxPolicy: { mode: deleteConfig.deleteSandbox, workspaceRoot: dir },
       });
 
       // dsh-shell 0.2.0-rc.x dropped `run()`: `execute(spec)` resolves a live
@@ -574,30 +731,93 @@ export function apply(ctx) {
   };
   ctx.provide('archiveManager', service);
 
+  // Background warm-up: fold titles for the newest archived sessions shortly
+  // after startup so the first open of 设置 > 归档会话 already has real titles.
+  // Bounded to 40 ids and paced, so it cannot hog the event loop at boot.
+  ctx.effect(() => {
+    if (!settings.warmTitles) return () => {};
+    const timer = setTimeout(() => {
+      (async () => {
+        try {
+          const { titlesMissing } = await service.list();
+          const missing = (titlesMissing || []).slice(0, 40);
+          for (let i = 0; i < missing.length; i += 4) {
+            await readTitles(missing.slice(i, i + 4));
+            await new Promise((resolve) => setTimeout(resolve, 40));
+          }
+        } catch {
+          /* warm-up is best effort */
+        }
+      })();
+    }, settings.warmDelayMs);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+    return () => clearTimeout(timer);
+  }, 'archiveManager.titleWarmup');
+
   // HTTP fallback for browser clients where service wiring is not yet proxied.
-  // Trust fence (mirrors client-connection's isTrustedApiRequest): mandatory
-  // Host header (DNS-rebinding defense), cross-site requests refused, and an
-  // 8 KiB body cap enforced two ways (Content-Length precheck + stream count).
+  // DSH's web server only routes: plugin routes own their trust policy (the /api
+  // bridge and the SPA shell own their authentication). This fence therefore
+  // stands on its own and mirrors client-connection's isTrustedApiRequest:
+  //  - Host must parse as an authority literal for THIS listener or a loopback
+  //    spelling of it (a DNS-rebinding page would otherwise pass with its own
+  //    hostname), with the listener's port;
+  //  - Sec-Fetch-Site: cross-site is refused outright;
+  //  - an Origin, when present, must equal the accepted Host authority;
+  //  - bodies stay capped at 8 KiB, enforced two ways.
   const webFiber = ctx.inject(['webServer'], (webCtx) => {
     const webServer = webCtx.webServer;
     if (!webServer) return;
     const MAX_BODY_BYTES = 8 * 1024;
+    const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+    const isLoopbackHostname = (name) => {
+      const value = String(name || '').toLowerCase();
+      if (LOOPBACK_HOSTNAMES.has(value)) return true;
+      return /^127(?:\.\d{1,3}){3}$/.test(value);
+    };
+    const asAuthority = (value) => {
+      try {
+        const url = new URL('http://' + String(value || ''));
+        return { hostname: url.hostname.toLowerCase(), port: url.port || '80' };
+      } catch {
+        return undefined;
+      }
+    };
+    /** The listener's own authority, or undefined while it is not observable. */
+    const listenerAuthority = () => {
+      try {
+        const origin = new URL(String(webServer.getOrigin ? webServer.getOrigin() : ''));
+        return {
+          hostname: origin.hostname.toLowerCase(),
+          port: origin.port || (origin.protocol === 'https:' ? '443' : '80'),
+        };
+      } catch {
+        return undefined;
+      }
+    };
     const trustCheck = (req) => {
       const host = String(req.headers?.host || '');
       if (!host) return false; // no Host -> possible DNS rebinding
-      if (!/^[-a-zA-Z0-9.]+(:\d+)?$/.test(host)) return false; // weird chars (port allowed)
-      const origin = req.headers?.origin;
-      if (origin !== undefined && origin !== null && origin !== 'null') {
-        try {
-          const o = new URL(String(origin));
-          if (o.host.toLowerCase() !== host.toLowerCase()) return false; // cross-site
-        } catch {
-          return false;
-        }
-      } else if (origin === 'null') {
-        return false; // opaque origin (sandboxed iframe)
+      if (!/^[a-zA-Z0-9.\-:\[\]]+$/.test(host)) return false; // authority literals only
+      const authority = asAuthority(host);
+      if (authority === undefined) return false;
+      const listener = listenerAuthority();
+      if (listener !== undefined) {
+        if (authority.port !== listener.port) return false;
+        if (authority.hostname !== listener.hostname && !isLoopbackHostname(authority.hostname)) return false;
+      } else if (!isLoopbackHostname(authority.hostname)) {
+        return false; // listener authority unknown: trust loopback only
       }
-      return true;
+      if (String(req.headers?.['sec-fetch-site'] || '').toLowerCase() === 'cross-site') return false;
+      const origin = req.headers?.origin;
+      if (origin === undefined || origin === null) return true;
+      if (String(origin) === 'null') return false; // opaque origin (sandboxed iframe)
+      try {
+        const o = new URL(String(origin));
+        if (o.protocol !== 'http:' && o.protocol !== 'https:') return false;
+        return o.host.toLowerCase() === host.toLowerCase();
+      } catch {
+        return false;
+      }
     };
     const readBody = async (req) => {
       const len = Number(req.headers?.['content-length'] || 0);
@@ -630,7 +850,22 @@ export function apply(ctx) {
           if (req.method === 'POST' && path === '/search') {
             const body = await readBody(req);
             const data = body ? JSON.parse(body) : {};
-            const r = await service.search(data);
+            // A disconnected caller cancels the scan: forward a signal the service
+            // checks between archived sessions.
+            const controller = new AbortController();
+            const abort = () => controller.abort();
+            res.on('close', abort);
+            try {
+              const r = await service.search({ ...data, signal: controller.signal });
+              return send(200, r);
+            } finally {
+              res.off?.('close', abort);
+            }
+          }
+          if (req.method === 'POST' && path === '/titles') {
+            const body = await readBody(req);
+            const data = body ? JSON.parse(body) : {};
+            const r = await service.titles(Array.isArray(data.ids) ? data.ids : []);
             return send(200, r);
           }
           if (req.method === 'POST' && path === '/unarchive') {

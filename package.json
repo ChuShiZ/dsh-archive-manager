@@ -1,6 +1,6 @@
 {
   "name": "@chushiz/dsh-archive-manager",
-  "version": "0.6.3",
+  "version": "0.10.0",
   "description": "DSH profile-bundle plugin: browse archived sessions, restore (un-archive) one to continue the conversation, or hard-delete its on-disk JSONL log directory. Integrates into the Settings panel.",
   "type": "module",
   "publishConfig": {
@@ -29,6 +29,7 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-cordis-client-runner"
       ],
@@ -43,24 +44,29 @@
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
+    "CHANGELOG.md",
     "LICENSE",
     "assets"
   ],
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/schemastery": "^3.18.2",
     "@deepseek-ai/dsh-client-locale": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-renderer": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-cordis-client-runner": "^0.2.0-rc.2"
   },
   "engines": {
-    "node": "^22.19.0 || >=24.0.0"
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.0-rc.2 <0.3.0"
   },
   "scripts": {
     "build": "tsdown && node scripts/rename-client.mjs",
     "test": "node smoke-test.mjs",
+    "prepack": "npm run build && npm test",
     "watch": "tsdown --watch"
   },
   "devDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.2",
     "tsdown": "^0.22.14"
   },
   "license": "MIT"

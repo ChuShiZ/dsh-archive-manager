@@ -25,5 +25,8 @@ jobs:
       - name: Install build deps
         run: npm ci || npm install --no-package-lock
 
+      - name: Build and test
+        run: npm run build && npm test
+
       - name: Publish to npm (Trusted Publishing)
         run: npm publish --provenance --access public

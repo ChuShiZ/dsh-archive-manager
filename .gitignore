@@ -1,6 +1,6 @@
 # Dependencies / build
+# lib/ ships the built client bundle (package.json exports ./client to it).
 node_modules/
-lib/
 dist/
 *.tsbuildinfo
 
@@ -17,3 +17,6 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Package artifacts
+*.tgz

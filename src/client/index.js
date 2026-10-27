@@ -11,6 +11,8 @@
  * hides it from the client, expose it via a `@Remote` method on the service so
  * `ctx.archiveManager.*` is callable in the browser.
  */
+import { defaultCollapsedGroups, groupRows, isGroupCollapsed } from './grouping.js';
+
 export const inject = ['slots', 'sessions', 'timer', 'locale'];
 
 const React = typeof require !== 'undefined' ? require('react') : globalThis.React;
@@ -39,6 +41,13 @@ const I18N = {
     previewLoading: '加载预览中…',
     previewEmpty: '无可预览消息',
     previewTitle: '点击切换对话预览',
+    hideHits: '收起命中',
+    titleLoading: '标题加载中…（先显示目录名）',
+    expandAll: '展开全部',
+    collapseAll: '折叠全部',
+    expandGroup: '展开该分组',
+    collapseGroup: '折叠该分组',
+    refreshingSuffix: '  ·  更新中…',
     unknownWorkspace: '(未知工作区)',
     roleUser: '用户：',
     roleAssistant: 'AI：',
@@ -73,6 +82,13 @@ const I18N = {
     previewLoading: 'Loading preview…',
     previewEmpty: 'No previewable messages',
     previewTitle: 'Click to toggle preview',
+    hideHits: 'Hide hits',
+    titleLoading: 'Loading title… (showing folder name)',
+    expandAll: 'Expand all',
+    collapseAll: 'Collapse all',
+    expandGroup: 'Expand group',
+    collapseGroup: 'Collapse group',
+    refreshingSuffix: '  ·  updating…',
     unknownWorkspace: '(unknown workspace)',
     roleUser: 'User:',
     roleAssistant: 'Assistant:',
@@ -116,23 +132,36 @@ export function apply(ctx) {
   const sessions = ctx.sessions ?? ctx.get('sessions');
   const timer = ctx.timer ?? ctx.get('timer');
   if (slots === undefined) return;
+  // HTTP fallback via webServer route (for runtimes that don't proxy archiveManager).
+  // Also used for titles() when the proxied service lacks that newer method.
+  const httpCall = (path, body, signal) => {
+    const init = body
+      ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }
+      : {};
+    if (signal) init.signal = signal;
+    return fetch(path, init)
+    .then(async (r) => {
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+      return j;
+    });
+  };
+  const httpTitles = (ids) => httpCall('/archive-manager/api/titles', { ids: ids || [] });
   const getManager = () => {
     try {
       const m = ctx.archiveManager ?? ctx.get('archiveManager');
       if (m && typeof m.list === 'function') return m;
     } catch {}
-    // HTTP fallback via webServer route (for runtimes that don't proxy archiveManager)
-    const httpCall = (path, body) => {
-      return fetch(path, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : undefined)
-      .then(async (r) => {
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
-        return j;
-      });
-    };
     return {
       list: () => httpCall('/archive-manager/api/list'),
-      search: (opts) => httpCall('/archive-manager/api/search', opts || {}),
+      titles: httpTitles,
+      search: (opts) => {
+        const src = opts && typeof opts === 'object' ? opts : {};
+        const signal = src.signal;
+        const body = { ...src };
+        delete body.signal;
+        return httpCall('/archive-manager/api/search', body, signal);
+      },
       unarchive: (id) => httpCall('/archive-manager/api/unarchive', { id }),
       delete: (id, cfg) => httpCall('/archive-manager/api/delete', { id, config: cfg }),
       deleteMany: (ids, cfg) => httpCall('/archive-manager/api/deleteMany', { ids, config: cfg }),
@@ -143,13 +172,25 @@ export function apply(ctx) {
   const CSS = [
     '.ds-ardl-search{width:100%;box-sizing:border-box;margin-bottom:10px;padding:8px 10px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:13px;outline:none;}',
     '.ds-ardl-search:focus{border-color:var(--dsw-alias-brand-primary);}',
-    '.ds-ardl-count{font-size:12px;color:var(--dsw-alias-label-secondary);margin:0 0 8px;}',
-    '.ds-ardl-list{max-height:62vh;overflow:auto;margin:0;}',
-    '.ds-ardl-group{margin-bottom:6px;}',
-    '.ds-ardl-group-header{display:flex;align-items:center;justify-content:space-between;padding:8px 8px 4px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);border-bottom:1px solid var(--dsw-alias-border-l2);}',
-    '.ds-ardl-group-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
-    '.ds-ardl-group-count{flex:none;opacity:.7;}',
+    '.ds-ardl-count-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 8px;}',
+    '.ds-ardl-count{font-size:12px;color:var(--dsw-alias-label-secondary);}',
+    '.ds-ardl-linkbtn{border:0;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:12px;cursor:pointer;padding:2px 6px;border-radius:4px;}',
+    '.ds-ardl-linkbtn:hover{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent);}',
+    '.ds-ardl-list{max-height:62vh;overflow:auto;margin:0;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-border-l2) transparent;}',
+    '.ds-ardl-list::-webkit-scrollbar{width:10px;}',
+    '.ds-ardl-list::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l2);border-radius:5px;border:2px solid transparent;background-clip:content-box;}',
+    '.ds-ardl-list::-webkit-scrollbar-thumb:hover{background:var(--dsw-alias-label-secondary);background-clip:content-box;}',
+    '.ds-ardl-list::-webkit-scrollbar-track{background:transparent;}',
+    '.ds-ardl-group{margin-bottom:0;}',
+    '.ds-ardl-group-header{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:6px;width:100%;box-sizing:border-box;margin:0;padding:8px;font:inherit;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1);border:0;border-bottom:1px solid var(--dsw-alias-border-l1);cursor:pointer;text-align:left;box-shadow:0 8px 12px -12px rgba(0,0,0,.5);}',
+    '.ds-ardl-group-header:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);}',
+    '.ds-ardl-group-header:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px;}',
+    '.ds-ardl-group-caret{flex:none;width:12px;font-size:10px;line-height:1;color:var(--dsw-alias-label-secondary);}',
+    '.ds-ardl-group-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+    '.ds-ardl-group-count{flex:none;font-size:11px;font-weight:600;background:color-mix(in srgb, var(--dsw-alias-brand-primary) 9%, transparent);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:1px 7px;}',
+    '.ds-ardl-title-pending{font-size:11px;font-weight:400;color:var(--dsw-alias-label-secondary);opacity:.65;margin-left:6px;}',
     '.ds-ardl-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 8px;border-bottom:1px solid var(--dsw-alias-border-l1);}',
+    '.ds-ardl-row:hover{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 4%, transparent);}',
     '.ds-ardl-meta{min-width:0;flex:1;}',
     '.ds-ardl-title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dsw-alias-label-primary);}',
     '.ds-ardl-sub{font-size:12px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px;}',
@@ -171,6 +212,8 @@ export function apply(ctx) {
     '.ds-ardl-preview-loading,.ds-ardl-preview-empty{font-size:12px;color:var(--dsw-alias-label-secondary);padding:4px 6px;}',
     '.ds-ardl-snippets{margin-top:2px;}',
     '.ds-ardl-snippet-more{font-size:11px;color:var(--dsw-alias-label-secondary);opacity:.7;margin-top:3px;}',
+    '.ds-ardl-hit-toggle{border:0;background:transparent;color:var(--dsw-alias-brand-primary);font-size:11px;padding:3px 2px;margin-top:3px;cursor:pointer;text-align:left;}',
+    '.ds-ardl-hit-toggle:hover{text-decoration:underline;}',
     '.ds-ardl-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;flex:0 1 auto;min-width:0;white-space:nowrap;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px;}',
     '.ds-ardl-btn:hover{background:var(--dsw-alias-bg-layer-1);}',
     '.ds-ardl-btn:disabled{opacity:.5;cursor:default;}',
@@ -212,6 +255,40 @@ export function apply(ctx) {
   const titleOf = (r) => r.title || basenameOf(r.cwd) || shortId(r.id);
   const subOf = (r) => [basenameOf(r.cwd), fmtTime(r.createdAt), r.agentPreset, shortId(r.id)].filter(Boolean).join('   ·   ');
 
+  // ── Local cache ───────────────────────────────────────────────────────
+  // Every settings open used to start from a blank "加载中". Painting the last
+  // snapshot from localStorage (then revalidating behind it) makes the list feel
+  // instant; titles live in a second cache because folding one is expensive.
+  const CACHE_ROWS = 'ds-ardl.rows.v1';
+  const CACHE_TITLES = 'ds-ardl.titles.v1';
+  const CACHE_COLLAPSED = 'ds-ardl.collapsed.v2';
+  const EMPTY_COLLAPSE_DEFAULTS = {};
+  function storageGet(key, fallback) {
+    try {
+      if (typeof localStorage === 'undefined') return fallback;
+      const raw = localStorage.getItem(key);
+      return raw === null || raw === undefined ? fallback : JSON.parse(raw);
+    } catch {
+      return fallback;
+    }
+  }
+  function storageSet(key, value) {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch {}
+  }
+  function cachedTitles() {
+    const map = storageGet(CACHE_TITLES, {});
+    return map && typeof map === 'object' ? map : {};
+  }
+  function cachedRows() {
+    const snapshot = storageGet(CACHE_ROWS, null);
+    if (!snapshot || !Array.isArray(snapshot.rows)) return [];
+    const titles = cachedTitles();
+    return snapshot.rows.map((row) => ({ ...row, title: row.title || titles[row.id] || '' }));
+  }
+
   function ArchivedList(props) {
     const close = props && props.close;
     const [localeId, setLocaleId] = React.useState(() => getLocaleId(ctx));
@@ -223,9 +300,11 @@ export function apply(ctx) {
       return () => { try { off1?.(); } catch{} try { off2?.(); } catch{} };
     }, []);
     const t = I18N[localeId] || I18N.zh;
-    const [rows, setRows] = React.useState([]);
+    const [rows, setRows] = React.useState(cachedRows);
     const [query, setQuery] = React.useState('');
-    const [loading, setLoading] = React.useState(false);
+    const [loading, setLoading] = React.useState(() => cachedRows().length === 0);
+    const [refreshing, setRefreshing] = React.useState(false);
+    const [titlesPending, setTitlesPending] = React.useState(0);
     const [searching, setSearching] = React.useState(false);
     const [searchMode, setSearchMode] = React.useState('');
     const [confirmId, setConfirmId] = React.useState(undefined);
@@ -238,6 +317,20 @@ export function apply(ctx) {
     const [batchBusy, setBatchBusy] = React.useState(false);
     const [previewCache, setPreviewCache] = React.useState({});
     const [expandedPreview, setExpandedPreview] = React.useState({});
+    const [collapsedGroups, setCollapsedGroups] = React.useState(() => {
+      const saved = storageGet(CACHE_COLLAPSED, null);
+      return saved && typeof saved === 'object' ? saved : null;
+    });
+    // Search results keep their own in-memory collapse state: a fresh search opens
+    // every project (so matches are visible), but each header can be folded too.
+    const [searchCollapsedGroups, setSearchCollapsedGroups] = React.useState({});
+    const rowsRef = React.useRef(rows);
+    rowsRef.current = rows;
+    const requestSeq = React.useRef(0);
+    const searchAbort = React.useRef(null);
+    const composingRef = React.useRef(false);
+    const [compositionTick, setCompositionTick] = React.useState(0);
+    const [expandedHitRows, setExpandedHitRows] = React.useState(new Set());
 
     const TYPE_CHIPS = [
       { key: 'all', label: t.chips.all, types: [] },
@@ -246,75 +339,172 @@ export function apply(ctx) {
       { key: 'tool', label: t.chips.tool, types: ['tool/call', 'tool/result'] },
     ];
 
-    const refresh = React.useCallback(async () => {
-      setLoading(true);
+    // Titles are folded on the host by reading whole session logs. Fetch them in
+    // small batches after the rows are painted so the list fills in progressively
+    // instead of blocking on the slowest session.
+    const hydrateTitles = React.useCallback(async (ids, seq) => {
+      const queue = Array.isArray(ids) ? ids.slice() : [];
+      while (queue.length > 0) {
+        if (seq !== requestSeq.current) return;
+        const chunk = queue.splice(0, 4);
+        try {
+          const m = getManager();
+          const r = m && typeof m.titles === 'function' ? await m.titles(chunk) : await httpTitles(chunk);
+          const got = (r && r.titles) || {};
+          const entries = Object.entries(got).filter(([, value]) => typeof value === 'string');
+          if (entries.length > 0) {
+            const cache = cachedTitles();
+            for (const [id, title] of entries) cache[id] = title;
+            storageSet(CACHE_TITLES, cache);
+            if (seq === requestSeq.current) {
+              setRows((prev) => prev.map((row) => (Object.prototype.hasOwnProperty.call(got, row.id) ? { ...row, title: got[row.id] } : row)));
+            }
+          }
+        } catch {
+          /* keep the fallback title; the next open retries */
+        }
+        if (seq === requestSeq.current) setTitlesPending(queue.length);
+      }
+      if (seq === requestSeq.current) setTitlesPending(0);
+    }, []);
+
+    const refresh = React.useCallback(async (opts) => {
+      const seq = ++requestSeq.current;
+      const silent = !!(opts && opts.silent) || rowsRef.current.length > 0;
+      if (!silent) setLoading(true);
+      setRefreshing(true);
       setError('');
       try {
         const m = getManager();
         if (!m) throw new Error('archiveManager not ready');
         const r = await m.list();
-        setRows(r && r.rows ? r.rows : []);
+        if (seq !== requestSeq.current) return;
+        const titles = cachedTitles();
+        const nextRows = (r && r.rows ? r.rows : []).map((row) => ({ ...row, title: row.title || titles[row.id] || '' }));
+        setRows(nextRows);
+        setSelectedIds((prev) => {
+          if (prev.size === 0) return prev;
+          const present = new Set(nextRows.map((row) => row.id));
+          const next = new Set([...prev].filter((id) => present.has(id)));
+          return next.size === prev.size ? prev : next;
+        });
+        storageSet(CACHE_ROWS, { savedAt: Date.now(), rows: nextRows });
         setSearchMode('');
+        const missing = r && Array.isArray(r.titlesMissing)
+          ? r.titlesMissing
+          : nextRows.filter((row) => !row.title).map((row) => row.id);
+        setTitlesPending(missing.length);
+        if (missing.length > 0) hydrateTitles(missing, seq);
       } catch (e) {
-        setError(t.errorLoad(e && e.message ? e.message : String(e)));
+        if (seq === requestSeq.current) setError(t.errorLoad(e && e.message ? e.message : String(e)));
       } finally {
-        setLoading(false);
+        if (seq === requestSeq.current) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
-    }, [t]);
+    }, [t, hydrateTitles]);
 
     // debounced full-text search: query -> manager.search()
     const searchTimer = React.useRef(null);
     const doSearch = React.useCallback(async (q, types) => {
       const trimmed = String(q || '').trim();
       if (!trimmed) {
-        await refresh();
+        await refresh({ silent: true });
         return;
       }
+      if (searchAbort.current) {
+        try { searchAbort.current.abort(); } catch {}
+      }
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      searchAbort.current = controller;
+      const seq = ++requestSeq.current;
       setSearching(true);
       setError('');
+      setTitlesPending(0);
       try {
         const m = getManager();
         if (!m) throw new Error('archiveManager not ready');
         if (typeof m.search === 'function') {
-          const r = await m.search({ query: trimmed, limit: 50, ...(types && types.length > 0 ? { types } : {}) });
-          setRows(r && r.rows ? r.rows : []);
+          const r = await m.search({
+            query: trimmed,
+            limit: 50,
+            ...(types && types.length > 0 ? { types } : {}),
+            ...(controller ? { signal: controller.signal } : {}),
+          });
+          if (seq !== requestSeq.current) return;
+          const titles = cachedTitles();
+          setRows((r && r.rows ? r.rows : []).map((row) => ({ ...row, title: row.title || titles[row.id] || '' })));
+          setSelectedIds(new Set());
+          setExpandedHitRows(new Set());
           setSearchMode(r && r.mode ? r.mode : '');
         } else {
           const r = await m.list();
+          if (seq !== requestSeq.current) return;
           const low = trimmed.toLowerCase();
           const filtered = (r.rows || []).filter((row) => (row.title && row.title.toLowerCase().indexOf(low) !== -1) || String(row.id).toLowerCase().indexOf(low) !== -1);
           setRows(filtered);
+          setSelectedIds(new Set());
+          setExpandedHitRows(new Set());
         }
       } catch (e) {
-        setError(t.errorSearch(e && e.message ? e.message : String(e)));
+        if (controller && controller.signal.aborted) return; // superseded by a newer query
+        if (seq === requestSeq.current) setError(t.errorSearch(e && e.message ? e.message : String(e)));
       } finally {
-        setSearching(false);
+        if (searchAbort.current === controller) searchAbort.current = null;
+        if (seq === requestSeq.current) setSearching(false);
       }
     }, [refresh, t]);
 
     const switchTypeFilter = (key) => {
       setTypeFilter(key);
-      const chip = TYPE_CHIPS.find((c) => c.key === key);
-      const trimmed = String(query || '').trim();
-      if (trimmed) doSearch(trimmed, chip ? chip.types : []);
+      // The query effect below re-runs the search when typeFilter changes.
     };
 
+    // Exactly one list() on mount: the query effect below used to fire a second
+    // one, doubling the (previously seconds-long) first load.
+    const firstQueryEffect = React.useRef(true);
     React.useEffect(() => {
       refresh();
-    }, [refresh]);
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Closing the panel cancels background title hydration and any search.
+    React.useEffect(() => () => {
+      requestSeq.current += 1;
+      if (searchAbort.current) {
+        try { searchAbort.current.abort(); } catch {}
+        searchAbort.current = null;
+      }
+    }, []);
 
     React.useEffect(() => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
       const trimmed = String(query || '').trim();
       if (!trimmed) {
-        // immediate refresh when cleared
-        refresh();
+        if (searchAbort.current) {
+          try { searchAbort.current.abort(); } catch {}
+          searchAbort.current = null;
+        }
+        if (firstQueryEffect.current) {
+          firstQueryEffect.current = false;
+          return;
+        }
+        // Cleared: restore the full list (instant from the local cache) and drop
+        // the search-only collapse state so the next search opens every project.
+        setSearchCollapsedGroups({});
+        refresh({ silent: true });
         return;
+      }
+      // Never search intermediate IME composition text.
+      if (composingRef.current) return;
+      if (searchAbort.current) {
+        try { searchAbort.current.abort(); } catch {}
+        searchAbort.current = null;
       }
       const chip = TYPE_CHIPS.find((c) => c.key === typeFilter);
       searchTimer.current = setTimeout(() => { doSearch(query, chip ? chip.types : []); }, 280);
       return () => { if (searchTimer.current) clearTimeout(searchTimer.current); };
-    }, [query, doSearch, refresh, typeFilter]);
+    }, [query, typeFilter, doSearch, refresh, compositionTick]);
 
     const doRestore = async (id) => {
       setBusyId(id);
@@ -402,20 +592,44 @@ export function apply(ctx) {
 
     const isBusy = loading || searching;
 
-    // group rows by workspace (mirrors sidebar grouping)
-    const groups = (() => {
-      const map = new Map();
-      for (const r of rows) {
-        const key = r.workspace || t.unknownWorkspace;
-        if (!map.has(key)) map.set(key, []);
-        map.get(key).push(r);
+    // group rows by workspace; groups follow their most recent session
+    const groups = React.useMemo(() => groupRows(rows, t.unknownWorkspace), [rows, t.unknownWorkspace]);
+    const collapsedDefaults = React.useMemo(() => defaultCollapsedGroups(groups), [groups]);
+    const searchingNow = String(query || '').trim().length > 0;
+    const effectiveCollapsed = (key) => (searchingNow
+      ? isGroupCollapsed(searchCollapsedGroups, EMPTY_COLLAPSE_DEFAULTS, key)
+      : isGroupCollapsed(collapsedGroups, collapsedDefaults, key));
+    const setGroupCollapsed = (key, next) => {
+      if (searchingNow) {
+        setSearchCollapsedGroups((prev) => ({ ...prev, [key]: !!next }));
+        return;
       }
-      return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-    })();
+      setCollapsedGroups((prev) => {
+        const base = prev || collapsedDefaults;
+        const nextMap = { ...base, [key]: !!next };
+        storageSet(CACHE_COLLAPSED, nextMap);
+        return nextMap;
+      });
+    };
+    const allCollapsed = groups.length > 0 && groups.every((group) => effectiveCollapsed(group.key));
+    const setAllCollapsed = (next) => {
+      const nextMap = {};
+      for (const group of groups) nextMap[group.key] = !!next;
+      if (searchingNow) {
+        setSearchCollapsedGroups(nextMap);
+        return;
+      }
+      storageSet(CACHE_COLLAPSED, nextMap);
+      setCollapsedGroups(nextMap);
+    };
 
     const renderRow = (s) => {
       const confirming = confirmId === s.id;
       const snippetList = (s.snippets && s.snippets.length > 0 ? s.snippets : (s.snippet ? [{ segments: [{ text: s.snippet, hit: false }] }] : []));
+      const allHitsOpen = expandedHitRows.has(s.id);
+      const visibleHits = allHitsOpen ? snippetList : snippetList.slice(0, 1);
+      const totalHits = typeof s.matchCount === 'number' ? Math.max(s.matchCount, snippetList.length) : snippetList.length;
+      const hiddenHits = Math.max(0, totalHits - visibleHits.length);
       const previewOpen = !!expandedPreview[s.id];
       const previewMsgs = previewCache[s.id];
       const isSelected = selectedIds.has(s.id);
@@ -450,15 +664,31 @@ export function apply(ctx) {
             className: 'ds-ardl-title',
             style: { cursor: 'pointer' },
             onClick: (e) => { e.stopPropagation(); togglePreview(s.id); },
-            title: t.previewTitle,
-          }, titleOf(s) + (previewOpen ? '  ▲' : '  ▾')),
+            title: s.title ? (s.title + ' — ' + t.previewTitle) : t.previewTitle,
+          },
+            titleOf(s),
+            !s.title && titlesPending > 0
+              ? React.createElement('span', { className: 'ds-ardl-title-pending', title: t.titleLoading }, '···')
+              : null,
+            previewOpen ? '  ▲' : '  ▾'
+          ),
           React.createElement('div', { className: 'ds-ardl-sub' }, subOf(s)),
           snippetList.length > 0
             ? React.createElement('div', { className: 'ds-ardl-snippets' },
-                snippetList.map(renderHit),
-                typeof s.matchCount === 'number' && s.matchCount > snippetList.length
-                  ? React.createElement('div', { className: 'ds-ardl-snippet-more' }, t.moreHits(s.matchCount - snippetList.length))
-                  : null
+                visibleHits.map(renderHit),
+                allHitsOpen && snippetList.length > 1
+                  ? React.createElement('button', { type: 'button', className: 'ds-ardl-hit-toggle', onClick: () => setExpandedHitRows((prev) => {
+                      const next = new Set(prev);
+                      next.delete(s.id);
+                      return next;
+                    }) }, t.hideHits)
+                  : hiddenHits > 0
+                    ? React.createElement('button', { type: 'button', className: 'ds-ardl-hit-toggle', onClick: () => setExpandedHitRows((prev) => {
+                        const next = new Set(prev);
+                        next.add(s.id);
+                        return next;
+                      }) }, t.moreHits(hiddenHits))
+                    : null
               )
             : null,
           previewOpen
@@ -490,20 +720,27 @@ export function apply(ctx) {
       ? React.createElement('div', { className: 'ds-ardl-empty' }, searching ? t.searching : t.loading)
       : rows.length === 0
         ? React.createElement('div', { className: 'ds-ardl-empty' }, query.trim() ? t.emptyNoMatch : t.emptyNoArchived)
-        : groups.map(([ws, items]) =>
-            React.createElement('div', { key: ws, className: 'ds-ardl-group' },
-              React.createElement('div', { className: 'ds-ardl-group-header' },
-                React.createElement('span', { className: 'ds-ardl-group-name' }, ws),
-                React.createElement('span', { className: 'ds-ardl-group-count' }, String(items.length))
+        : groups.map((group) => {
+            const collapsed = effectiveCollapsed(group.key);
+            return React.createElement('div', { key: group.key, className: 'ds-ardl-group' + (collapsed ? ' collapsed' : '') },
+              React.createElement('button', {
+                type: 'button',
+                className: 'ds-ardl-group-header',
+                'aria-expanded': !collapsed,
+                title: collapsed ? t.expandGroup : t.collapseGroup,
+                onClick: () => setGroupCollapsed(group.key, !collapsed),
+              },
+                React.createElement('span', { className: 'ds-ardl-group-caret' }, collapsed ? '▸' : '▾'),
+                React.createElement('span', { className: 'ds-ardl-group-name', title: group.key }, group.label),
+                React.createElement('span', { className: 'ds-ardl-group-count' }, String(group.items.length))
               ),
-              items.map(renderRow)
-            )
-          );
+              collapsed ? null : group.items.map(renderRow)
+            );
+          });
 
     const countText = (() => {
-      const q = String(query || '').trim();
       if (loading) return '';
-      if (!q) return t.countAll(rows.length);
+      if (!searchingNow) return t.countAll(rows.length);
       const modeLabel = t.modeLabels[searchMode] || '';
       return t.countMatch(rows.length, modeLabel);
     })();
@@ -513,6 +750,13 @@ export function apply(ctx) {
         className: 'ds-ardl-search', type: 'text',
         placeholder: t.searchPlaceholder, value: query,
         onChange: (e) => setQuery(e.target.value),
+        onCompositionStart: () => { composingRef.current = true; },
+        onCompositionEnd: (e) => {
+          composingRef.current = false;
+          const value = e && e.currentTarget ? e.currentTarget.value : undefined;
+          if (typeof value === 'string') setQuery(value);
+          setCompositionTick((tick) => tick + 1);
+        },
       }),
       React.createElement('div', { className: 'ds-ardl-chips' },
         TYPE_CHIPS.map((c) => React.createElement('button', {
@@ -532,36 +776,43 @@ export function apply(ctx) {
               : React.createElement('button', { className: 'ds-ardl-btn danger', disabled: batchBusy, onClick: () => setBatchConfirm(true) }, t.deleteSelected)
           )
         : null,
-      !loading ? React.createElement('div', { className: 'ds-ardl-count' }, countText + (searching ? t.searchingSuffix : '')) : null,
+      !loading ? React.createElement('div', { className: 'ds-ardl-count-row' },
+        React.createElement('span', { className: 'ds-ardl-count' }, countText + (searching ? t.searchingSuffix : refreshing ? t.refreshingSuffix : '')),
+        groups.length > 1
+          ? React.createElement('button', { type: 'button', className: 'ds-ardl-linkbtn', onClick: () => setAllCollapsed(!allCollapsed) }, allCollapsed ? t.expandAll : t.collapseAll)
+          : null
+      ) : null,
       error ? React.createElement('div', { className: 'ds-ardl-err' }, error) : null,
       React.createElement('div', { className: 'ds-ardl-list' }, body)
     );
   }
 
-  slots.inject('settings.section', () => {
-    const currentId = getLocaleId(ctx);
-    let currentLabel = (I18N[currentId] || I18N.zh).settingsLabel;
-    let dispose = slots.register(
-      { name: 'settings.section', id: 'ds-arch-section', order: 80, label: currentLabel },
-      (props) => React.createElement(ArchivedList, { close: props ? props.close : undefined })
-    );
-    const updateLabel = () => {
-      try {
-        const newId = getLocaleId(ctx);
-        const newLabel = (I18N[newId] || I18N.zh).settingsLabel;
-        if (newLabel !== currentLabel) {
-          try { dispose?.(); } catch {}
-          currentLabel = newLabel;
-          dispose = slots.register(
-            { name: 'settings.section', id: 'ds-arch-section', order: 80, label: currentLabel },
-            (props) => React.createElement(ArchivedList, { close: props ? props.close : undefined })
-          );
-        }
-      } catch {}
-    };
-    let off1, off2;
-    try { off1 = ctx.locale?.subscribe?.(updateLabel); } catch {}
-    try { off2 = ctx.on?.('locale/change', updateLabel); } catch {}
-    return () => { try { off1?.(); } catch{} try { off2?.(); } catch{} try { dispose?.(); } catch{} };
-  });
+  // The settings shell resolves a section's `label` through the slot system and
+  // re-reads it on every locale revision, so the label is a function bound to our
+  // locale namespace instead of a manual register/unregister pair.
+  const LOCALE_NS = 'archiveManager';
+  const LOCALE_DICTIONARY = {
+    zh: { settingsLabel: I18N.zh.settingsLabel },
+    en: { settingsLabel: I18N.en.settingsLabel },
+  };
+  try {
+    ctx.effect(() => ctx.locale.register(LOCALE_NS, LOCALE_DICTIONARY), 'ds-ardl: locale dictionary');
+  } catch {}
+  const translate = (() => {
+    try {
+      if (typeof ctx.locale?.bind === 'function') return ctx.locale.bind(LOCALE_NS);
+    } catch {}
+    return (key) => (I18N[getLocaleId(ctx)] || I18N.zh)[key] || key;
+  })();
+
+  slots.inject('settings.section', () => slots.register(
+    {
+      name: 'settings.section',
+      id: 'ds-arch-section',
+      order: 80,
+      label: () => translate('settingsLabel'),
+      locale: LOCALE_NS,
+    },
+    (props) => React.createElement(ArchivedList, { close: props ? props.close : undefined })
+  ));
 }
