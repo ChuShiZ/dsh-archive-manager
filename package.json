@@ -1,7 +1,16 @@
 {
   "name": "@chushiz/dsh-archive-manager",
-  "version": "0.10.0",
-  "description": "DSH profile-bundle plugin: browse archived sessions, restore (un-archive) one to continue the conversation, or hard-delete its on-disk JSONL log directory. Integrates into the Settings panel.",
+  "version": "0.11.0",
+  "description": "DSH plugin: browse archived sessions, restore them to continue the conversation, hard-delete them, and optionally auto-archive idle sessions. Settings live on the Plugins page.",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "archive",
+    "session-management",
+    "unarchive",
+    "settings"
+  ],
   "type": "module",
   "publishConfig": {
     "access": "public"

@@ -58,6 +58,30 @@ const I18N = {
     errorBatch: (s, f, detail) => `批量删除完成：成功 ${s} 失败 ${f}${detail ? '；' + detail : ''}`,
     errorBatchFailed: (msg) => `批量删除失败: ${msg}`,
     searchingSuffix: '  ·  搜索中…',
+    config: {
+      title: '归档管理配置',
+      autoArchive: '自动归档',
+      autoArchiveHint: '把长时间没用的旧会话自动收进归档；随时可以在「归档会话」页恢复',
+      maxAgeDays: '闲置天数',
+      maxAgeDaysHint: '超过这么多天没用过的会话会自动归档；填 0 表示不按时间归档',
+      maxPerWorkspace: '每个项目保留',
+      maxPerWorkspaceHint: '每个项目最多保留多少个会话，超出的自动归档最旧的；填 0 表示不限制',
+      minAgeDays: '保护期（天）',
+      minAgeDaysHint: '最近用过的会话不会被归档',
+      intervalMinutes: '检查间隔（分钟）',
+      startDelayMs: '启动后首次检查延迟（毫秒）',
+      scan: '立即执行一次',
+      confirmScan: '现在执行一次自动归档？归档后的会话可以在「归档会话」页恢复。',
+      scanFailed: (msg) => `执行失败: ${msg}`,
+      scanning: '执行中…',
+      scanNever: '还没有检查过',
+      scanDone: (r) => `上次检查：发现 ${r.candidates || 0} 个可归档，已归档 ${r.archived || 0} 个`,
+      readonly: '当前设置不可修改。',
+      loading: '正在加载…',
+      unavailable: '暂时无法加载设置（插件未启用或 DSH 版本过旧）。',
+      saveFailed: '保存失败，可能有其他配置覆盖了这里。',
+      saveError: (msg) => `保存失败: ${msg}`,
+    },
   },
   en: {
     settingsLabel: 'Archived Sessions',
@@ -99,6 +123,30 @@ const I18N = {
     errorBatch: (s, f, detail) => `Batch delete: ${s} succeeded, ${f} failed${detail ? '; ' + detail : ''}`,
     errorBatchFailed: (msg) => `Batch delete failed: ${msg}`,
     searchingSuffix: '  ·  searching…',
+    config: {
+      title: 'Archive settings',
+      autoArchive: 'Automatic archiving',
+      autoArchiveHint: 'Put old sessions you no longer use into the archive; restore them any time from Archived Sessions',
+      maxAgeDays: 'Idle days',
+      maxAgeDaysHint: 'Sessions unused for this many days are archived; 0 means do not archive by time',
+      maxPerWorkspace: 'Keep per project',
+      maxPerWorkspaceHint: 'Keep at most this many sessions per project and archive the oldest extras; 0 means no limit',
+      minAgeDays: 'Safety window (days)',
+      minAgeDaysHint: 'Sessions used recently are never archived',
+      intervalMinutes: 'Check interval (minutes)',
+      startDelayMs: 'First check delay (ms)',
+      scan: 'Run now',
+      confirmScan: 'Run automatic archiving now? Archived sessions can be restored from Archived Sessions.',
+      scanFailed: (msg) => `Failed: ${msg}`,
+      scanning: 'Running…',
+      scanNever: 'Not checked yet',
+      scanDone: (r) => `Last check: ${r.candidates || 0} to archive, ${r.archived || 0} archived`,
+      readonly: 'These settings cannot be changed.',
+      loading: 'Loading…',
+      unavailable: 'Settings are not available right now (plugin disabled or DSH too old).',
+      saveFailed: 'Could not save; another setting may be overriding this one.',
+      saveError: (msg) => `Could not save: ${msg}`,
+    },
   },
 };
 
@@ -226,6 +274,27 @@ export function apply(ctx) {
     '.ds-ardl-actions{display:flex;gap:6px;}',
     '.ds-ardl-empty{color:var(--dsw-alias-label-secondary);padding:14px 4px;}',
     '.ds-ardl-err{color:var(--dsw-alias-state-error-primary);font-size:12px;margin:8px 2px;}',
+    '.ds-ardl-cfg{display:flex;flex-direction:column;gap:14px;max-width:760px;color:var(--dsw-alias-label-primary);}',
+    '.ds-ardl-cfg-heading{margin:0;font-size:16px;font-weight:600;line-height:24px;}',
+    '.ds-ardl-cfg-group{display:flex;flex-direction:column;}',
+    '.ds-ardl-cfg-row{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:10px 0;border-bottom:1px solid var(--dsw-alias-border-l1);}',
+    '.ds-ardl-cfg-row:last-child{border-bottom:none;}',
+    '.ds-ardl-cfg-copy{min-width:0;display:flex;flex-direction:column;gap:3px;}',
+    '.ds-ardl-cfg-label{font-size:13px;font-weight:500;}',
+    '.ds-ardl-cfg-hint{font-size:12px;color:var(--dsw-alias-label-tertiary);line-height:18px;}',
+    '.ds-ardl-cfg-control{flex:none;display:flex;align-items:center;gap:8px;}',
+    '.ds-ardl-cfg-num{width:116px;box-sizing:border-box;padding:6px 9px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;outline:none;}',
+    '.ds-ardl-cfg-num:focus{border-color:var(--dsw-alias-brand-primary);}',
+    '.ds-ardl-cfg-num:disabled{opacity:.6;}',
+    '.ds-ardl-cfg-switch{position:relative;width:38px;height:22px;border-radius:999px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);cursor:pointer;padding:0;flex:none;transition:background .15s ease,border-color .15s ease;}',
+    '.ds-ardl-cfg-switch .ds-ardl-cfg-knob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--dsw-alias-label-secondary);transition:transform .15s ease,background .15s ease;}',
+    '.ds-ardl-cfg-switch.on{border-color:var(--dsw-alias-brand-primary);background:color-mix(in srgb, var(--dsw-alias-brand-primary) 20%, transparent);}',
+    '.ds-ardl-cfg-switch.on .ds-ardl-cfg-knob{transform:translateX(16px);background:var(--dsw-alias-brand-primary);}',
+    '.ds-ardl-cfg-switch:disabled{opacity:.5;cursor:default;}',
+    '.ds-ardl-cfg-notice{font-size:12px;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-2);border-radius:8px;padding:8px 10px;}',
+    '.ds-ardl-cfg-error{font-size:12px;color:var(--dsw-alias-state-error-primary);}',
+    '.ds-ardl-cfg-scan{display:flex;align-items:center;gap:10px;padding:10px 0 0;flex-wrap:wrap;}',
+    '.ds-ardl-cfg-scan-state{font-size:12px;color:var(--dsw-alias-label-tertiary);}',
   ].join('');
 
   ctx.effect(() => {
@@ -815,4 +884,291 @@ export function apply(ctx) {
     },
     (props) => React.createElement(ArchivedList, { close: props ? props.close : undefined })
   ));
+
+  // ── Plugins-page configuration card ────────────────────────────────────
+  // DSH's settings service derives a live form from the volatile Config fields
+  // and persists writes through the active profile's config-editor, so these
+  // controls need no YAML editing and apply immediately.
+  const CONFIG_ENTRY_ID = 'archive-manager';
+  const CONFIG_BUNDLE = '@chushiz/dsh-archive-manager';
+
+  function ConfigRow(props) {
+    return React.createElement('div', { className: 'ds-ardl-cfg-row' },
+      React.createElement('div', { className: 'ds-ardl-cfg-copy' },
+        React.createElement('span', { className: 'ds-ardl-cfg-label' }, props.label),
+        props.hint ? React.createElement('span', { className: 'ds-ardl-cfg-hint' }, props.hint) : null),
+      React.createElement('div', { className: 'ds-ardl-cfg-control' }, props.children));
+  }
+
+  function ConfigSwitch(props) {
+    return React.createElement('button', {
+      type: 'button',
+      role: 'switch',
+      'aria-checked': props.checked ? 'true' : 'false',
+      'aria-label': props.label || '',
+      disabled: !!props.disabled,
+      className: 'ds-ardl-cfg-switch' + (props.checked ? ' on' : ''),
+      onClick: () => props.onChange(!props.checked),
+    }, React.createElement('span', { className: 'ds-ardl-cfg-knob' }));
+  }
+
+  function ConfigNumber(props) {
+    const [draft, setDraft] = React.useState(String(props.value));
+    React.useEffect(() => { setDraft(String(props.value)); }, [props.value]);
+    const commit = async () => {
+      const parsed = Number(draft);
+      if (!Number.isFinite(parsed)) {
+        setDraft(String(props.value));
+        return;
+      }
+      const step = props.step || 1;
+      const next = Math.min(props.max, Math.max(props.min, Math.round(parsed / step) * step));
+      setDraft(String(next));
+      if (next === props.value) return;
+      const accepted = await props.onChange(next);
+      if (!accepted) setDraft(String(props.value));
+    };
+    return React.createElement('input', {
+      className: 'ds-ardl-cfg-num',
+      type: 'number',
+      min: props.min,
+      max: props.max,
+      step: props.step || 1,
+      value: draft,
+      disabled: !!props.disabled,
+      onChange: (event) => setDraft(event.target.value),
+      onBlur: () => { void commit(); },
+      onKeyDown: (event) => { if (event.key === 'Enter') void commit(); },
+    });
+  }
+
+  function useLocaleId() {
+    const [localeId, setLocaleId] = React.useState(() => getLocaleId(ctx));
+    React.useEffect(() => {
+      const update = () => setLocaleId(getLocaleId(ctx));
+      let offLocale;
+      let offChange;
+      try { offLocale = ctx.locale?.subscribe?.(update); } catch {}
+      try { offChange = ctx.on?.('locale/change', update); } catch {}
+      return () => {
+        try { offLocale?.(); } catch {}
+        try { offChange?.(); } catch {}
+      };
+    }, []);
+    return localeId;
+  }
+
+  // Optional host-service access without declaring it in `inject`: Cordis throws
+  // when reading an undeclared service property, so probe `get()` first and fall
+  // back to the HTTP routes.
+  const safeManager = () => {
+    try {
+      if (typeof ctx.get === 'function') {
+        const manager = ctx.get('archiveManager');
+        if (manager && typeof manager.list === 'function') return manager;
+      }
+    } catch {}
+    try {
+      const manager = ctx.archiveManager;
+      if (manager && typeof manager.list === 'function') return manager;
+    } catch {}
+    return undefined;
+  };
+
+  try {
+    ctx.inject(['configForms'], (formsCtx) => {
+      const configForms = formsCtx.configForms;
+      if (!configForms || typeof configForms.get !== 'function') return;
+
+      const canDiscover = typeof configForms.describe === 'function';
+
+      /** Locate this plugin's settings namespace even if the profile row id differs. */
+      function findNamespace() {
+        try {
+          const view = configForms.describe()?.getSnapshot?.()?.view;
+          const namespaces = Array.isArray(view && view.namespaces) ? view.namespaces : [];
+          for (const row of namespaces) {
+            try {
+              if (JSON.stringify(row.schema || {}).includes('autoArchive')) return row.ns;
+            } catch {}
+          }
+          // Fallback when the schema envelope is opaque: the documented row id.
+          if (namespaces.some((row) => row.ns === CONFIG_ENTRY_ID)) return CONFIG_ENTRY_ID;
+        } catch {}
+        return undefined;
+      }
+
+      function makeForm(namespace) {
+        try {
+          const candidate = configForms.get(namespace);
+          if (!candidate || typeof candidate.getSnapshot !== 'function' || typeof candidate.subscribe !== 'function' || typeof candidate.mutate !== 'function') return undefined;
+          return candidate;
+        } catch {
+          return undefined;
+        }
+      }
+
+      function ArchiveConfigCard() {
+        const localeId = useLocaleId();
+        const text = (I18N[localeId] || I18N.zh).config;
+        const [form, setForm] = React.useState(() => (canDiscover ? undefined : makeForm(CONFIG_ENTRY_ID)));
+        const [snapshot, setSnapshot] = React.useState(() => (form ? form.getSnapshot() : null));
+        const [error, setError] = React.useState('');
+        const [busy, setBusy] = React.useState(false);
+        const [scanBusy, setScanBusy] = React.useState(false);
+        const [scanState, setScanState] = React.useState(null);
+        const [missing, setMissing] = React.useState(false);
+
+        React.useEffect(() => {
+          if (!canDiscover) return undefined;
+          const mirror = configForms.describe();
+          if (!mirror || typeof mirror.subscribe !== 'function') return undefined;
+          const sync = () => {
+            const namespace = findNamespace();
+            if (namespace !== undefined) {
+              setMissing(false);
+              setForm((previous) => previous || makeForm(namespace));
+              return;
+            }
+            if (mirror.getSnapshot?.()?.view !== undefined) setMissing(true);
+          };
+          sync();
+          return mirror.subscribe(sync);
+        }, []);
+
+        React.useEffect(() => {
+          if (!form) {
+            setSnapshot(null);
+            return undefined;
+          }
+          setSnapshot(form.getSnapshot());
+          return form.subscribe(() => setSnapshot(form.getSnapshot()));
+        }, [form]);
+
+        React.useEffect(() => {
+          let alive = true;
+          const read = async () => {
+            try {
+              const manager = safeManager();
+              if (manager && typeof manager.autoArchiveStatus === 'function') return await manager.autoArchiveStatus();
+            } catch {}
+            return httpCall('/archive-manager/api/autoArchive/status');
+          };
+          read().then((result) => { if (alive && result && result.lastRun) setScanState(result.lastRun); }).catch(() => {});
+          return () => { alive = false; };
+        }, []);
+
+        const value = (snapshot && snapshot.value) || {};
+        const autoArchive = {
+          enabled: false,
+          maxAgeDays: 5,
+          maxPerWorkspace: 0,
+          minAgeDays: 1,
+          intervalMinutes: 60,
+          startDelayMs: 60000,
+          ...(value.autoArchive || {}),
+        };
+        const writable = !snapshot || snapshot.writable !== false;
+        const disabled = !writable || busy;
+
+        const write = async (path, next) => {
+          if (!form) return false;
+          setError('');
+          setBusy(true);
+          try {
+            const accepted = await form.mutate([{ op: 'set', path, value: next }]);
+            if (!accepted) setError(text.saveFailed);
+            return accepted;
+          } catch (e) {
+            setError(text.saveError(e && e.message ? e.message : String(e)));
+            return false;
+          } finally {
+            setBusy(false);
+          }
+        };
+
+        const runScan = async () => {
+          setError('');
+          setScanBusy(true);
+          try {
+            const manager = safeManager();
+            let result;
+            try {
+              result = manager && typeof manager.autoArchiveRun === 'function'
+                ? await manager.autoArchiveRun()
+                : await httpCall('/archive-manager/api/autoArchive/run', {});
+            } catch {
+              result = await httpCall('/archive-manager/api/autoArchive/run', {});
+            }
+            setScanState(result);
+            if (result && result.error) setError(result.error);
+            else if (result && Array.isArray(result.errors) && result.errors.length > 0) setError(String(result.errors[0]));
+          } catch (e) {
+            setError(text.scanFailed(e && e.message ? e.message : String(e)));
+          } finally {
+            setScanBusy(false);
+          }
+        };
+
+        const header = [
+          React.createElement('h3', { key: 'title', className: 'ds-ardl-cfg-heading' }, text.title),
+        ];
+        if (!form || !snapshot || snapshot.status !== 'ready') {
+          return React.createElement('div', { className: 'ds-ardl-cfg' },
+            header,
+            React.createElement('div', { className: 'ds-ardl-cfg-notice' },
+              missing ? text.unavailable : (!snapshot || snapshot.status === 'loading' ? text.loading : text.unavailable)));
+        }
+
+        const row = (key, label, hint, control) => React.createElement(ConfigRow, { key, label, hint }, control);
+        const numberRow = (key, label, hint, current, min, max, step, path) => row(key, label, hint,
+          React.createElement(ConfigNumber, {
+            value: current,
+            min,
+            max,
+            step,
+            disabled,
+            onChange: (next) => write(path, next),
+          }));
+        return React.createElement('div', { className: 'ds-ardl-cfg' },
+          header,
+          !writable ? React.createElement('div', { className: 'ds-ardl-cfg-notice' }, text.readonly) : null,
+          error ? React.createElement('div', { className: 'ds-ardl-cfg-error' }, error) : null,
+          React.createElement('div', { className: 'ds-ardl-cfg-group' },
+            row('enabled', text.autoArchive, text.autoArchiveHint,
+              React.createElement(ConfigSwitch, {
+                checked: !!autoArchive.enabled,
+                disabled,
+                label: text.autoArchive,
+                onChange: (next) => write(['autoArchive', 'enabled'], next),
+              })),
+            numberRow('maxAgeDays', text.maxAgeDays, text.maxAgeDaysHint, autoArchive.maxAgeDays, 0, 3650, 1, ['autoArchive', 'maxAgeDays']),
+            numberRow('maxPerWorkspace', text.maxPerWorkspace, text.maxPerWorkspaceHint, autoArchive.maxPerWorkspace, 0, 1000, 1, ['autoArchive', 'maxPerWorkspace']),
+            numberRow('minAgeDays', text.minAgeDays, text.minAgeDaysHint, autoArchive.minAgeDays, 0, 3650, 1, ['autoArchive', 'minAgeDays']),
+            numberRow('intervalMinutes', text.intervalMinutes, null, autoArchive.intervalMinutes, 5, 1440, 5, ['autoArchive', 'intervalMinutes']),
+            numberRow('startDelayMs', text.startDelayMs, null, autoArchive.startDelayMs, 0, 300000, 1000, ['autoArchive', 'startDelayMs'])),
+          React.createElement('div', { className: 'ds-ardl-cfg-scan' },
+            React.createElement('button', {
+              type: 'button',
+              className: 'ds-ardl-btn danger',
+              disabled: scanBusy || !writable || !autoArchive.enabled,
+              onClick: () => {
+                const confirmed = typeof window === 'undefined' || typeof window.confirm !== 'function' || window.confirm(text.confirmScan);
+                if (confirmed) void runScan();
+              },
+            }, scanBusy ? text.scanning : text.scan),
+            React.createElement('span', { className: 'ds-ardl-cfg-scan-state' },
+              scanState ? text.scanDone(scanState) : text.scanNever)));
+      }
+
+      // Register the card unconditionally: the plugin page only renders a bundle
+      // config section for bundles that registered here, and the card itself
+      // shows a notice until the settings service serves the entry's form.
+      formsCtx.effect(() => formsCtx.slots.inject('plugins.bundle.config', () => formsCtx.slots.register({
+        name: 'plugins.bundle.config',
+        key: CONFIG_BUNDLE,
+        locale: LOCALE_NS,
+      }, ArchiveConfigCard)), 'ds-ardl: plugins-page config card');
+    });
+  } catch {}
 }

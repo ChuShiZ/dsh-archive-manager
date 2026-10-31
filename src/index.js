@@ -13,8 +13,11 @@
  * The client half (src/client/index.js + the `dsh.client` entry) reaches this
  * service through the harness's service/Remote plumbing.
  */
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import { join } from 'node:path';
 import Schema from '@deepseek-ai/schemastery';
-import { defaultConfig, resolveConfig } from './config.js';
+import { defaultConfig, resolveAutoArchive, resolveConfig } from './config.js';
 
 /** Plugin identity (Cordis/docs convention: `name`; matches the loader row id). */
 export const name = 'archive-manager';
@@ -29,6 +32,17 @@ export const Config = Schema.object({
   deleteSandbox: Schema.union(['danger-full-access', 'workspace-write']).default(defaultConfig.deleteSandbox),
   warmTitles: Schema.boolean().default(defaultConfig.warmTitles),
   warmDelayMs: Schema.number().min(0).max(60000).step(500).default(defaultConfig.warmDelayMs),
+  // Only the auto-archive policy is exposed on the Plugins page. Its volatile
+  // declaration lets the DSH settings service derive a live form and update the
+  // reference in place, so the plugin reads `.get()` at decision time.
+  autoArchive: Schema.object({
+    enabled: Schema.boolean().default(defaultConfig.autoArchive.enabled),
+    maxAgeDays: Schema.number().min(0).max(3650).step(1).default(defaultConfig.autoArchive.maxAgeDays),
+    maxPerWorkspace: Schema.number().min(0).max(1000).step(1).default(defaultConfig.autoArchive.maxPerWorkspace),
+    minAgeDays: Schema.number().min(0).max(3650).step(1).default(defaultConfig.autoArchive.minAgeDays),
+    intervalMinutes: Schema.number().min(5).max(1440).step(5).default(defaultConfig.autoArchive.intervalMinutes),
+    startDelayMs: Schema.number().min(0).max(300000).step(1000).default(defaultConfig.autoArchive.startDelayMs),
+  }).volatile(),
 });
 
 /** Hard dependencies on harness services. `agents` is optional (best-effort live-agent stop before delete). */
@@ -40,6 +54,8 @@ export const inject = ['sessionPersistence', 'workspaceRegistry', 'fs', 'shell',
  */
 export function apply(ctx, config) {
   const settings = resolveConfig(config);
+  /** Live read: the volatile auto-archive policy changes in place without a remount. */
+  const readAutoArchive = () => resolveAutoArchive(config && config.autoArchive);
   const { sessionPersistence, workspaceRegistry, fs, shell, sessionQuery } = ctx;
 
   /**
@@ -147,7 +163,8 @@ export function apply(ctx, config) {
     const archived = workspaceRegistry.archivedSessionIds || [];
     const headers = headersOf(await sessionPersistence.list());
     const byId = new Map();
-    for (const h of headers) byId.set(h.id, h);
+    // Subagent child logs never surface in the archived-sessions page.
+    for (const h of headers) if (!isChildSession(h)) byId.set(h.id, h);
     const present = archived.filter((id) => byId.has(id));
 
     const rows = present.map((id) => {
@@ -248,6 +265,346 @@ export function apply(ctx, config) {
     searchCache.clear();
   }
 
+  // ── Auto archive ───────────────────────────────────────────────────────
+  // Policy sweep over stored sessions: idle-age and per-workspace quota rules,
+  // applied through the public workspace-registry archive seam. The archive set
+  // is the same durable state the built-in archive uses, so every automatic
+  // archive is reversible from 设置 > 归档会话.
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const AUTO_ARCHIVE_PREVIEW_LIMIT = 100;
+  const AUTO_ARCHIVE_MAX_PER_RUN = 50;
+  const AUTO_ARCHIVE_MAX_ERRORS = 20;
+  const GRACE_LIMIT = 2000;
+  const unarchiveCooldown = new Map(); // id -> deadline (ms); set when the user restores a session
+  let autoArchiveLast = null;
+  let autoArchiveInflight = null;
+  // Archived ids baseline: lets the first sweep of a process detect restores made
+  // after startup even though the durable grace file only knows our own restores.
+  let lastArchivedIds = new Set(workspaceRegistry.archivedSessionIds || []);
+
+  // Restore grace survives restarts in $DSH_HOME/archive-manager/grace.json.
+  const graceDir = () => join(process.env.DSH_HOME || join(os.homedir(), '.dsh'), 'archive-manager');
+  const graceFile = () => join(graceDir(), 'grace.json');
+  let graceWrite = Promise.resolve();
+
+  async function loadGrace() {
+    try {
+      const data = JSON.parse(await readFile(graceFile(), 'utf8'));
+      const now = Date.now();
+      for (const [id, until] of Object.entries(data && typeof data === 'object' ? data : {})) {
+        if (typeof until === 'number' && until > now) unarchiveCooldown.set(String(id), until);
+      }
+    } catch {
+      /* no grace file or malformed: start empty */
+    }
+  }
+  const graceReady = loadGrace();
+
+  function persistGrace() {
+    const payload = JSON.stringify(Object.fromEntries(unarchiveCooldown));
+    graceWrite = graceWrite.then(async () => {
+      try {
+        await mkdir(graceDir(), { recursive: true });
+        const temporary = `${graceFile()}.${process.pid}.tmp`;
+        await writeFile(temporary, payload, 'utf8');
+        await rename(temporary, graceFile());
+      } catch {
+        /* grace is best effort; the in-memory map still guards this process */
+      }
+    });
+    return graceWrite;
+  }
+
+  /** A subagent child session: not a sidebar conversation and never auto-archived. */
+  function isChildSession(header) {
+    return !!header && (header.parentSession !== undefined || header.origin === 'subagent' || header.origin === 'sub-agent');
+  }
+
+  /** Canonical cwd for the per-workspace quota (Windows is case-insensitive / slash-agnostic). */
+  function normalizeCwd(cwd) {
+    const raw = String(cwd || '').trim();
+    if (!raw) return '';
+    if (process.platform === 'win32') return raw.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+    return raw.replace(/\/+$/, '');
+  }
+
+  /**
+   * JSONL backend revision (`dev:ino:size:mtimeNs:ctimeNs[:corpus]`) → file
+   * mtime. It is the last-activity signal that costs no session-log read;
+   * backends whose revision is not file-based fall back to `createdAt`.
+   */
+  function revisionMtimeMs(revision) {
+    try {
+      const parts = String(revision || '').split(':');
+      if (parts.length < 5) return undefined;
+      const ns = BigInt(parts[3]);
+      const ms = Number(ns / 1000000n);
+      return Number.isSafeInteger(ms) && ms > 0 ? ms : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function lastActivityOf(header, snapshot) {
+    return revisionMtimeMs(snapshot && snapshot.revision) ?? (header && header.createdAt) ?? 0;
+  }
+
+  function registryList(name) {
+    try {
+      return typeof ctx.get === 'function' ? ctx.get(name) : ctx[name];
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Whether the session is still attached (open) or has a live agent. */
+  function isSessionLive(id) {
+    const sessions = registryList('sessions');
+    try {
+      if (sessions && typeof sessions.get === 'function' && sessions.get(id) !== undefined) return true;
+    } catch {}
+    const agents = registryList('agents');
+    try {
+      if (agents && typeof agents.get === 'function' && agents.get(id) !== undefined) return true;
+    } catch {}
+    return false;
+  }
+
+  /** Fail closed: a broken pin projection must abort the sweep, not lose pins. */
+  function pinnedSessionIds() {
+    const ids = workspaceRegistry.pinnedSessionIds;
+    if (ids === undefined || ids === null) return [];
+    if (!Array.isArray(ids)) throw new Error('workspaceRegistry.pinnedSessionIds 不是数组');
+    return ids;
+  }
+
+  /**
+   * Grace after a restore, derived from the age threshold: a session restored
+   * today may be old enough for the age rule again only after maxAgeDays days.
+   * Persisted so a DSH restart cannot re-archive just-restored sessions.
+   */
+  function noteUnarchived(id, cfg) {
+    const key = String(id);
+    if (!cfg || cfg.maxAgeDays <= 0) {
+      if (unarchiveCooldown.delete(key)) return persistGrace();
+      return undefined;
+    }
+    const now = Date.now();
+    pruneCooldown(now);
+    while (unarchiveCooldown.size >= GRACE_LIMIT) {
+      const oldest = unarchiveCooldown.keys().next().value;
+      if (oldest === undefined) break;
+      unarchiveCooldown.delete(oldest);
+    }
+    unarchiveCooldown.set(key, now + cfg.maxAgeDays * DAY_MS);
+    return persistGrace();
+  }
+
+  /** Drop a grace entry (e.g. the session was deleted, not restored). */
+  function forgetUnarchived(id) {
+    if (unarchiveCooldown.delete(String(id))) return persistGrace();
+    return undefined;
+  }
+
+  function pruneCooldown(now) {
+    let removed = false;
+    for (const [id, until] of unarchiveCooldown) {
+      if (until <= now) {
+        unarchiveCooldown.delete(id);
+        removed = true;
+      }
+    }
+    if (removed) void persistGrace();
+  }
+
+  /** Build one sweep's plan (pure read: sessions, pinned ids, cooldown map). */
+  async function planAutoArchive(cfg, now) {
+    await graceReady;
+    pruneCooldown(now);
+    const archived = new Set(workspaceRegistry.archivedSessionIds || []);
+    const pinned = new Set(pinnedSessionIds());
+    const snapshots = await sessionPersistence.list();
+    const entries = [];
+    for (const snap of snapshots || []) {
+      const header = snapshotHeader(snap);
+      if (!header || !header.id) continue;
+      // Subagent child logs are not sidebar conversations: never auto-archive.
+      if (isChildSession(header)) continue;
+      entries.push({
+        id: String(header.id),
+        cwd: header.cwd || '',
+        group: normalizeCwd(header.cwd),
+        activity: lastActivityOf(header, snap),
+      });
+    }
+
+    // Detect restores made outside this plugin (the built-in unarchive): an id
+    // archived at the last baseline that is absent now gets grace.
+    for (const id of lastArchivedIds) {
+      if (!archived.has(id) && !unarchiveCooldown.has(id)) noteUnarchived(id, cfg);
+    }
+    await graceWrite;
+
+    const ageLimitMs = cfg.maxAgeDays * DAY_MS;
+    const minAgeMs = cfg.minAgeDays * DAY_MS;
+    const quotaOn = cfg.maxPerWorkspace > 0;
+    if (ageLimitMs <= 0 && !quotaOn) {
+      return { entries, candidates: [], skippedPinned: 0, skippedLive: 0 };
+    }
+
+    let skippedPinned = 0;
+    let skippedLive = 0;
+    const candidates = [];
+    const selected = new Set();
+    const eligible = (entry) => {
+      if (archived.has(entry.id) || selected.has(entry.id)) return false;
+      if (pinned.has(entry.id)) return false;
+      const cooldown = unarchiveCooldown.get(entry.id);
+      if (cooldown !== undefined && cooldown > now) return false;
+      if (isSessionLive(entry.id)) return false;
+      return now - entry.activity >= minAgeMs;
+    };
+    const select = (entry, reason) => {
+      if (selected.has(entry.id)) return;
+      selected.add(entry.id);
+      candidates.push({ id: entry.id, cwd: entry.cwd, activity: entry.activity, reason });
+    };
+
+    for (const entry of entries) {
+      if (archived.has(entry.id)) continue;
+      if (pinned.has(entry.id)) {
+        skippedPinned += 1;
+        continue;
+      }
+      if (isSessionLive(entry.id)) {
+        skippedLive += 1;
+        continue;
+      }
+      const cooldown = unarchiveCooldown.get(entry.id);
+      if (cooldown !== undefined && cooldown > now) continue;
+      if (now - entry.activity < minAgeMs) continue;
+      if (ageLimitMs > 0 && now - entry.activity >= ageLimitMs) select(entry, 'age');
+    }
+
+    if (quotaOn) {
+      // The quota counts every unarchived session (child logs were dropped
+      // above); pinned/live/recent ones occupy slots but are never selected.
+      const groups = new Map();
+      for (const entry of entries) {
+        if (archived.has(entry.id)) continue;
+        const list = groups.get(entry.group) || [];
+        list.push(entry);
+        groups.set(entry.group, list);
+      }
+      const keep = Math.max(0, Math.floor(cfg.maxPerWorkspace));
+      for (const list of groups.values()) {
+        list.sort((a, b) => b.activity - a.activity);
+        for (let i = keep; i < list.length; i++) {
+          if (eligible(list[i])) select(list[i], 'quota');
+        }
+      }
+    }
+
+    return { entries, candidates, skippedPinned, skippedLive };
+  }
+
+  /** Single-flight wrapper: a timer/manual/HTTP sweep can never overlap another. */
+  async function runAutoArchive(trigger, overrides, shouldStop) {
+    if (autoArchiveInflight !== null) return autoArchiveInflight;
+    const task = runAutoArchiveOnce(trigger, overrides, shouldStop);
+    autoArchiveInflight = task;
+    try {
+      return await task;
+    } finally {
+      if (autoArchiveInflight === task) autoArchiveInflight = null;
+    }
+  }
+
+  /** Run one policy sweep. Manual calls work even while the scheduler is off. */
+  async function runAutoArchiveOnce(trigger, overrides, shouldStop) {
+    const started = Date.now();
+    const basePolicy = readAutoArchive();
+    const overridePolicy = overrides && typeof overrides === 'object' ? overrides : {};
+    const cfg = resolveAutoArchive({ ...basePolicy, ...overridePolicy }, basePolicy);
+    const status = {
+      at: new Date(started).toISOString(),
+      trigger,
+      enabled: cfg.enabled,
+      policy: { ...cfg },
+      scanned: 0,
+      candidates: 0,
+      planned: 0,
+      truncated: false,
+      cancelled: false,
+      archived: 0,
+      archivedIds: [],
+      skippedPinned: 0,
+      skippedLive: 0,
+      skippedActive: 0,
+      skippedUnknown: 0,
+      errors: [],
+      errorCount: 0,
+      durationMs: 0,
+    };
+    if (typeof workspaceRegistry.archiveSession !== 'function') {
+      status.error = '当前 workspaceRegistry 不提供 archiveSession()，无法自动归档';
+      status.durationMs = Date.now() - started;
+      autoArchiveLast = status;
+      return status;
+    }
+    let plan;
+    try {
+      plan = await planAutoArchive(cfg, started);
+    } catch (e) {
+      status.error = e && e.message ? e.message : String(e);
+      status.durationMs = Date.now() - started;
+      autoArchiveLast = status;
+      return status;
+    }
+    status.scanned = plan.entries.length;
+    status.skippedPinned = plan.skippedPinned;
+    status.skippedLive = plan.skippedLive;
+    status.candidates = plan.candidates.length;
+    const planned = plan.candidates.slice(0, AUTO_ARCHIVE_MAX_PER_RUN);
+    status.planned = planned.length;
+    status.truncated = plan.candidates.length > planned.length;
+    for (const candidate of planned) {
+      if (shouldStop && shouldStop()) {
+        status.cancelled = true;
+        break;
+      }
+      try {
+        // Re-check after planning: the user may have opened, pinned, or
+        // archived this session between the plan and this write.
+        if ((workspaceRegistry.archivedSessionIds || []).includes(candidate.id)) continue;
+        if (pinnedSessionIds().includes(candidate.id)) continue;
+        if (isSessionLive(candidate.id)) continue;
+        await workspaceRegistry.archiveSession(candidate.id);
+        status.archived += 1;
+        if (status.archivedIds.length < AUTO_ARCHIVE_PREVIEW_LIMIT) status.archivedIds.push(candidate.id);
+      } catch (e) {
+        const errorName = e && e.name ? String(e.name) : '';
+        if (errorName === 'WorkspaceActiveSessionError') status.skippedActive += 1;
+        else if (errorName === 'WorkspaceUnknownSessionError') status.skippedUnknown += 1;
+        else {
+          status.errorCount += 1;
+          if (status.errors.length < AUTO_ARCHIVE_MAX_ERRORS) {
+            status.errors.push((candidate.id + ': ' + (e && e.message ? e.message : String(e))).slice(0, 500));
+          }
+        }
+      }
+    }
+    if (status.archived > 0) invalidateSearch();
+    try {
+      lastArchivedIds = new Set(workspaceRegistry.archivedSessionIds || []);
+    } catch {
+      /* keep the previous baseline rather than losing restore detection */
+    }
+    status.durationMs = Date.now() - started;
+    autoArchiveLast = status;
+    return status;
+  }
+
   const service = {
     /**
      * List archived sessions that still exist in persistence.
@@ -275,6 +632,26 @@ export function apply(ctx, config) {
         .filter((id) => id && archived.has(id))
         .slice(0, 100);
       return { titles: await readTitles(wanted) };
+    },
+
+    /** Current auto-archive policy and the last sweep's report. */
+    autoArchiveStatus() {
+      let archivedCount = 0;
+      try {
+        archivedCount = (workspaceRegistry.archivedSessionIds || []).length;
+      } catch {}
+      const policy = readAutoArchive();
+      return {
+        enabled: policy.enabled,
+        policy: { ...policy },
+        archivedCount,
+        lastRun: autoArchiveLast,
+      };
+    },
+
+    /** Run one auto-archive sweep now (manual or scheduled). */
+    async autoArchiveRun(overrides) {
+      return runAutoArchive('manual', overrides);
     },
 
     /**
@@ -489,16 +866,22 @@ export function apply(ctx, config) {
       return rememberSearch(cacheKey, { rows: sliced, query: trimmed, mode: 'scan' });
     },
 
-    /** Remove an id from the durable archive set (reverse of archiveSession). */
-    async unarchive(id) {
+    /**
+     * Remove an id from the durable archive set (reverse of archiveSession).
+     * `options.noGrace` skips the restore grace (used when deleting a session).
+     */
+    async unarchive(id, options) {
       if (!id) throw new Error('缺少会话 id');
       const reg = ctx.workspaceRegistry;
+      const noGrace = !!(options && options.noGrace);
       // Public API since dsh-workspace 0.2.0-rc.2; older builds only expose the
       // registry-global state write, which stays as the fallback.
       if (typeof reg.unarchiveSession === 'function') {
         await reg.unarchiveSession(id);
         forgetTitle(id);
         invalidateSearch();
+        if (noGrace) await forgetUnarchived(id);
+        else await noteUnarchived(id, readAutoArchive());
         return { ok: true };
       }
       const run = async () => {
@@ -513,6 +896,8 @@ export function apply(ctx, config) {
       else await run();
       forgetTitle(id);
       invalidateSearch();
+      if (noGrace) await forgetUnarchived(id);
+      else await noteUnarchived(id, readAutoArchive());
       return { ok: true };
     },
 
@@ -556,10 +941,11 @@ export function apply(ctx, config) {
         forgetTitle(id);
         invalidateSearch();
         try {
-          await service.unarchive(id);
+          await service.unarchive(id, { noGrace: true });
         } catch {
           // best effort: a leftover id only leaves a ghost row
         }
+        forgetUnarchived(id);
         // The workspace's ordered membership still names the session until the
         // registry's next mutation or a restart prunes it, which keeps a sidebar row.
         // Resolve the owning workspace from the session's own cwd and detach the id;
@@ -754,6 +1140,57 @@ export function apply(ctx, config) {
     return () => clearTimeout(timer);
   }, 'archiveManager.titleWarmup');
 
+  // Scheduled auto-archive sweep. The policy fields are volatile (live-editable
+  // from the Plugins page), so a slow poll re-reads them instead of relying on
+  // a remount: enabling, disabling, or changing the interval takes effect on
+  // the next tick. A sweep never overlaps itself because the tick awaits it.
+  ctx.effect(() => {
+    const POLL_MS = 15000;
+    let disposed = false;
+    let timer;
+    let nextSweepAt = 0;
+    let wasEnabled = false;
+    const arm = (delayMs) => {
+      timer = setTimeout(tick, Math.max(0, delayMs));
+      if (timer && typeof timer.unref === 'function') timer.unref();
+    };
+    const tick = async () => {
+      if (disposed) return;
+      try {
+        const cfg = readAutoArchive();
+        const now = Date.now();
+        if (!cfg.enabled) {
+          wasEnabled = false;
+          nextSweepAt = 0;
+        } else {
+          if (!wasEnabled || nextSweepAt === 0) {
+            wasEnabled = true;
+            nextSweepAt = now + Math.max(0, cfg.startDelayMs);
+          }
+          if (now >= nextSweepAt) {
+            const latest = readAutoArchive();
+            if (!latest.enabled) {
+              wasEnabled = false;
+              nextSweepAt = 0;
+            } else {
+              await runAutoArchive('timer', undefined, () => disposed);
+              nextSweepAt = Date.now() + Math.max(5, readAutoArchive().intervalMinutes) * 60000;
+            }
+          }
+        }
+      } catch {
+        /* one failed tick must not stop the chain */
+      } finally {
+        if (!disposed) arm(POLL_MS);
+      }
+    };
+    arm(POLL_MS);
+    return () => {
+      disposed = true;
+      clearTimeout(timer);
+    };
+  }, 'archiveManager.autoArchive');
+
   // HTTP fallback for browser clients where service wiring is not yet proxied.
   // DSH's web server only routes: plugin routes own their trust policy (the /api
   // bridge and the SPA shell own their authentication). This fence therefore
@@ -890,6 +1327,19 @@ export function apply(ctx, config) {
             const id = url.searchParams.get('id') || url.searchParams.get('sessionId') || '';
             const n = Number(url.searchParams.get('count') || 3);
             const r = await service.preview(id, n);
+            return send(200, r);
+          }
+          if (req.method === 'GET' && path === '/autoArchive/status') {
+            return send(200, service.autoArchiveStatus());
+          }
+          if (req.method === 'POST' && path === '/autoArchive/run') {
+            await readBody(req).catch(() => '');
+            // No policy overrides over HTTP: the profile settings decide, and a
+            // sweep only runs while auto-archive is enabled.
+            if (!service.autoArchiveStatus().enabled) {
+              return send(409, { error: '自动归档未启用' });
+            }
+            const r = await service.autoArchiveRun();
             return send(200, r);
           }
           return send(404, { error: 'not found' });
