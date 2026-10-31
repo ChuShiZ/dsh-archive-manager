@@ -2,11 +2,12 @@
 
 ## 0.11.0
 
-- 新增自动归档（默认关闭）：按闲置天数 `autoArchive.maxAgeDays`（默认 5 天）和/或每工作区保留上限 `maxPerWorkspace` 归档旧会话。
+- 新增自动归档（默认关闭）：按闲置天数 `autoArchive.maxAgeDays`（默认 5 天）和/或每项目保留数量 `maxPerWorkspace` 归档旧会话。
 - 固定安全行为：跳过已归档 / 置顶 / 打开或运行中的会话、subagent 子会话，`minAgeDays` 保护近期活跃会话；取消归档后按 `maxAgeDays` 天冷静期，避免刚恢复又被归档。
 - 最后活动时间取 JSONL 日志文件 mtime（不读正文），非 JSONL 后端退回会话创建时间；新增 `autoArchive/status` 与 `autoArchive/run` HTTP 路由。
 - 新增「插件」页配置卡片：在 **插件 → dsh-archive-manager** 直接修改自动归档选项，配置以 volatile 字段持久化到当前 profile 并即时生效，无需手改 `cordis.patch.yml`；删除沙箱 / 标题预热仍为 YAML 配置。
 - 自动归档策略改为运行时读取（volatile 引用），修改开关/阈值无需重载插件；调度器轮询配置以支持实时启用/停用。
+- 归档会话列表视觉优化：项目分组改成带浅色底栏和「N 个会话」的标题条，会话行缩进并用引导线归属到项目；行内元信息只留时间和预设，去掉重复的项目名和 session id，避免把项目名误认成会话；补充 hover / 选中态、键盘焦点和窄屏适配。
 - 修复：自动归档不再处理任务派生的子会话，归档页也会隐藏它们；每个项目的数量按项目目录分组统计（Windows 路径大小写/分隔符差异会合并）。
 - 修复：恢复冷静期持久化到 `$DSH_HOME/archive-manager/grace.json`，重启后仍生效；启动时以当前归档集为基线。
 - 加固：HTTP `/autoArchive/run` 不接受策略覆盖，未启用时返回 409；卡片只保留「启用自动归档」开关和数值项（去掉演练/置顶/停活等额外开关），「立即扫描」二次确认后执行；sweep 单飞、每轮上限 50、归档前复查 live/pin/已归档、pin 读取失败中止、整数/step 校验、错误上限、停用后中止进行中的扫描。

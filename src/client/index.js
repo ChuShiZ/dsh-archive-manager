@@ -23,6 +23,7 @@ const I18N = {
     searchPlaceholder: '搜索名称 / 目录 / id / 预设 / 会话正文…',
     chips: { all: '全部', user: '用户消息', assistant: 'AI 回复', tool: '工具调用' },
     countAll: (n) => `共 ${n} 个归档会话`,
+    groupCount: (n) => `${n} 个会话`,
     countMatch: (n, mode) => `匹配 ${n} 个${mode ? `（${mode}）` : ''}`,
     modeLabels: { fts: 'FTS 全文', scan: '逐会话扫描', 'fts+scan': 'FTS + 扫描补充' },
     batchSelected: (n) => `已选 ${n} 个`,
@@ -30,7 +31,7 @@ const I18N = {
     confirmDelete: '确认删除',
     confirmDeleteSelected: '确认删除所选',
     cancel: '取消',
-    restoreOpen: '恢复并打开',
+    restoreOpen: '恢复',
     delete: '删除',
     deleting: '删除中…',
     loading: '加载中…',
@@ -48,7 +49,7 @@ const I18N = {
     expandGroup: '展开该分组',
     collapseGroup: '折叠该分组',
     refreshingSuffix: '  ·  更新中…',
-    unknownWorkspace: '(未知工作区)',
+    unknownWorkspace: '(未关联项目)',
     roleUser: '用户：',
     roleAssistant: 'AI：',
     errorLoad: (msg) => `加载失败: ${msg}`,
@@ -88,6 +89,7 @@ const I18N = {
     searchPlaceholder: 'Search name / cwd / id / preset / content…',
     chips: { all: 'All', user: 'User', assistant: 'Assistant', tool: 'Tools' },
     countAll: (n) => `${n} archived sessions`,
+    groupCount: (n) => `${n} sessions`,
     countMatch: (n, mode) => `Matched ${n}${mode ? ` (${mode})` : ''}`,
     modeLabels: { fts: 'FTS', scan: 'scan', 'fts+scan': 'FTS + scan' },
     batchSelected: (n) => `${n} selected`,
@@ -95,7 +97,7 @@ const I18N = {
     confirmDelete: 'Confirm delete',
     confirmDeleteSelected: 'Confirm delete selected',
     cancel: 'Cancel',
-    restoreOpen: 'Restore & open',
+    restoreOpen: 'Restore',
     delete: 'Delete',
     deleting: 'Deleting…',
     loading: 'Loading…',
@@ -113,7 +115,7 @@ const I18N = {
     expandGroup: 'Expand group',
     collapseGroup: 'Collapse group',
     refreshingSuffix: '  ·  updating…',
-    unknownWorkspace: '(unknown workspace)',
+    unknownWorkspace: '(unassigned project)',
     roleUser: 'User:',
     roleAssistant: 'Assistant:',
     errorLoad: (msg) => `Load failed: ${msg}`,
@@ -218,62 +220,87 @@ export function apply(ctx) {
   };
 
   const CSS = [
-    '.ds-ardl-search{width:100%;box-sizing:border-box;margin-bottom:10px;padding:8px 10px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:13px;outline:none;}',
-    '.ds-ardl-search:focus{border-color:var(--dsw-alias-brand-primary);}',
-    '.ds-ardl-count-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 8px;}',
-    '.ds-ardl-count{font-size:12px;color:var(--dsw-alias-label-secondary);}',
-    '.ds-ardl-linkbtn{border:0;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:12px;cursor:pointer;padding:2px 6px;border-radius:4px;}',
+    '.ds-ardl-search{width:100%;box-sizing:border-box;margin:0 0 8px;padding:9px 12px;border-radius:10px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px;outline:none;transition:border-color .12s ease,box-shadow .12s ease;}',
+    '.ds-ardl-search::placeholder{color:var(--dsw-alias-label-tertiary);}',
+    '.ds-ardl-search:focus{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary) 13%, transparent);}',
+    '.ds-ardl-chips{display:flex;gap:2px;margin:0 0 10px;padding:2px;background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2));border-radius:10px;width:max-content;max-width:100%;flex-wrap:wrap;}',
+    '.ds-ardl-chip{border:0;background:transparent;color:var(--dsw-alias-label-secondary);border-radius:8px;padding:5px 10px;font:inherit;font-size:12px;font-weight:500;cursor:pointer;transition:background .12s ease,color .12s ease;}',
+    '.ds-ardl-chip:hover{color:var(--dsw-alias-label-primary);}',
+    '.ds-ardl-chip.active{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);box-shadow:0 1px 2px rgba(0,0,0,.06);}',
+    '.ds-ardl-chip:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px;}',
+    '.ds-ardl-count-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 4px;}',
+    '.ds-ardl-count{font-size:12px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;}',
+    '.ds-ardl-linkbtn{border:0;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:12px;cursor:pointer;padding:3px 6px;border-radius:6px;}',
     '.ds-ardl-linkbtn:hover{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent);}',
-    '.ds-ardl-list{max-height:62vh;overflow:auto;margin:0;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-border-l2) transparent;}',
+    '.ds-ardl-linkbtn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px;}',
+    '.ds-ardl-list{max-height:62vh;overflow:auto;margin:0;padding:0 2px 0 0;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-border-l2) transparent;}',
     '.ds-ardl-list::-webkit-scrollbar{width:10px;}',
     '.ds-ardl-list::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l2);border-radius:5px;border:2px solid transparent;background-clip:content-box;}',
     '.ds-ardl-list::-webkit-scrollbar-thumb:hover{background:var(--dsw-alias-label-secondary);background-clip:content-box;}',
     '.ds-ardl-list::-webkit-scrollbar-track{background:transparent;}',
-    '.ds-ardl-group{margin-bottom:0;}',
-    '.ds-ardl-group-header{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:6px;width:100%;box-sizing:border-box;margin:0;padding:8px;font:inherit;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1);border:0;border-bottom:1px solid var(--dsw-alias-border-l1);cursor:pointer;text-align:left;box-shadow:0 8px 12px -12px rgba(0,0,0,.5);}',
-    '.ds-ardl-group-header:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);}',
+    '.ds-ardl-group{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;margin:0 0 12px;}',
+    '.ds-ardl-group:last-child{margin-bottom:0;}',
+    '.ds-ardl-group-header{position:sticky;top:0;z-index:3;display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;margin:0;padding:4px 12px;min-height:38px;border:0;border-bottom:1px solid var(--dsw-alias-border-l2);border-radius:9px 9px 0 0;background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-secondary);font:inherit;font-size:12.5px;font-weight:500;line-height:17px;text-align:left;cursor:pointer;}',
+    '.ds-ardl-group-header:hover{color:var(--dsw-alias-label-primary);}',
     '.ds-ardl-group-header:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px;}',
-    '.ds-ardl-group-caret{flex:none;width:12px;font-size:10px;line-height:1;color:var(--dsw-alias-label-secondary);}',
-    '.ds-ardl-group-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
-    '.ds-ardl-group-count{flex:none;font-size:11px;font-weight:600;background:color-mix(in srgb, var(--dsw-alias-brand-primary) 9%, transparent);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:1px 7px;}',
-    '.ds-ardl-title-pending{font-size:11px;font-weight:400;color:var(--dsw-alias-label-secondary);opacity:.65;margin-left:6px;}',
-    '.ds-ardl-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 8px;border-bottom:1px solid var(--dsw-alias-border-l1);}',
-    '.ds-ardl-row:hover{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 4%, transparent);}',
-    '.ds-ardl-meta{min-width:0;flex:1;}',
-    '.ds-ardl-title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dsw-alias-label-primary);}',
-    '.ds-ardl-sub{font-size:12px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px;}',
-    '.ds-ardl-snippet{font-size:12px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:4px;background:color-mix(in srgb, var(--dsw-alias-brand-primary) 7%, transparent);padding:3px 6px;border-radius:4px;}',
+    '.ds-ardl-group-caret{flex:none;width:16px;height:16px;display:flex;align-items:center;justify-content:center;}',
+    '.ds-ardl-group-caret::before{content:"";width:5px;height:5px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg);margin-top:-2px;transition:transform .15s ease;}',
+    '.ds-ardl-group.collapsed .ds-ardl-group-caret::before{transform:rotate(-45deg);margin-top:0;margin-left:-2px;}',
+    '.ds-ardl-group-title{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start;}',
+    '.ds-ardl-group-name{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+    '.ds-ardl-group-path{max-width:100%;font-size:11px;font-weight:400;line-height:14px;color:var(--dsw-alias-label-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+    '.ds-ardl-group-count{flex:none;font-size:11px;font-weight:500;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;}',
+    '.ds-ardl-group-body{overflow:hidden;border-radius:0 0 9px 9px;}',
+    '.ds-ardl-title-pending{font-size:11px;font-weight:400;color:var(--dsw-alias-label-tertiary);margin-left:6px;}',
+    '.ds-ardl-row{display:flex;align-items:flex-start;gap:8px;padding:4px 12px;min-height:42px;box-sizing:border-box;border-bottom:1px solid var(--dsw-alias-border-l2);cursor:pointer;transition:background .12s ease;}',
+    '.ds-ardl-row:last-child{border-bottom:0;}',
+    '.ds-ardl-row:hover{background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-bg-layer-2));}',
+    '.ds-ardl-row.selected{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 6%, transparent);}',
+    '.ds-ardl-row.selected:hover{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent);}',
+    '.ds-ardl-check{flex:none;width:16px;height:16px;margin:1px 0 0;accent-color:var(--dsw-alias-brand-primary);cursor:pointer;}',
+    '.ds-ardl-meta{min-width:0;flex:1;display:flex;flex-direction:column;align-items:flex-start;}',
+    '.ds-ardl-title-line{display:flex;align-items:center;gap:6px;min-width:0;max-width:100%;}',
+    '.ds-ardl-title-toggle{display:inline-flex;align-items:center;min-width:0;border:0;background:transparent;padding:0;margin:0;font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;text-align:left;border-radius:4px;}',
+    '.ds-ardl-title-toggle:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px;}',
+    '.ds-ardl-title-text{font-size:13px;font-weight:600;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+    '.ds-ardl-sub{display:flex;align-items:baseline;gap:8px;min-width:0;max-width:100%;font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary);}',
+    '.ds-ardl-sub>span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+    '.ds-ardl-meta-time{font-variant-numeric:tabular-nums;}',
+    '.ds-ardl-snippets{margin-top:2px;display:flex;flex-direction:column;gap:2px;}',
+    '.ds-ardl-snippet{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:1px 0 1px 8px;border-left:2px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 24%, transparent);}',
     '.ds-ardl-snippet.expandable{cursor:pointer;}',
     '.ds-ardl-snippet.expanded{white-space:normal;cursor:pointer;word-break:break-all;}',
-    '.ds-ardl-mark{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 22%, transparent);color:var(--dsw-alias-label-primary);font-weight:600;border-radius:2px;padding:0 1px;}',
-    '.ds-ardl-chips{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;}',
-    '.ds-ardl-chip{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer;}',
-    '.ds-ardl-chip:hover{background:var(--dsw-alias-bg-layer-1);}',
-    '.ds-ardl-chip.active{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary);background:color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent);}',
-    '.ds-ardl-batch-bar{display:flex;align-items:center;gap:10px;margin-bottom:8px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);}',
-    '.ds-ardl-batch-info{font-size:12px;color:var(--dsw-alias-label-secondary);flex:1;}',
-    '.ds-ardl-preview{margin-top:8px;padding:6px 0;border-top:1px dashed var(--dsw-alias-border-l2);}',
-    '.ds-ardl-preview-msg{font-size:12px;padding:4px 6px;margin-top:4px;border-radius:6px;background:color-mix(in srgb, var(--dsw-alias-bg-layer-1) 80%, transparent);}',
-    '.ds-ardl-preview-msg.user{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 6%, transparent);}',
-    '.ds-ardl-preview-role{font-weight:600;margin-right:4px;color:var(--dsw-alias-label-primary);}',
+    '.ds-ardl-mark{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 18%, transparent);color:var(--dsw-alias-label-primary);border-radius:2px;padding:0 1px;}',
+    '.ds-ardl-batch-bar{display:flex;align-items:center;gap:10px;margin:0 0 8px;padding:7px 10px;border:0;border-radius:10px;background:color-mix(in srgb, var(--dsw-alias-brand-primary) 9%, transparent);}',
+    '.ds-ardl-batch-info{font-size:12px;font-weight:500;color:var(--dsw-alias-label-primary);flex:1;}',
+    '.ds-ardl-preview{margin-top:6px;padding:8px 10px;border:0;border-radius:8px;background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2));}',
+    '.ds-ardl-preview-msg{font-size:12px;line-height:18px;padding:4px 0;border-bottom:1px solid var(--dsw-alias-border-l1);}',
+    '.ds-ardl-preview-msg:last-child{border-bottom:0;}',
+    '.ds-ardl-preview-role{font-weight:600;margin-right:4px;color:var(--dsw-alias-label-secondary);}',
+    '.ds-ardl-preview-msg.user .ds-ardl-preview-role{color:var(--dsw-alias-brand-primary);}',
     '.ds-ardl-preview-text{color:var(--dsw-alias-label-secondary);word-break:break-word;white-space:pre-wrap;}',
-    '.ds-ardl-preview-loading,.ds-ardl-preview-empty{font-size:12px;color:var(--dsw-alias-label-secondary);padding:4px 6px;}',
-    '.ds-ardl-snippets{margin-top:2px;}',
-    '.ds-ardl-snippet-more{font-size:11px;color:var(--dsw-alias-label-secondary);opacity:.7;margin-top:3px;}',
-    '.ds-ardl-hit-toggle{border:0;background:transparent;color:var(--dsw-alias-brand-primary);font-size:11px;padding:3px 2px;margin-top:3px;cursor:pointer;text-align:left;}',
+    '.ds-ardl-preview-loading,.ds-ardl-preview-empty{font-size:12px;color:var(--dsw-alias-label-tertiary);padding:3px 0;}',
+    '.ds-ardl-hit-toggle{border:0;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:11px;padding:2px 0;margin-top:2px;cursor:pointer;text-align:left;}',
     '.ds-ardl-hit-toggle:hover{text-decoration:underline;}',
-    '.ds-ardl-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;flex:0 1 auto;min-width:0;white-space:nowrap;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px;}',
-    '.ds-ardl-btn:hover{background:var(--dsw-alias-bg-layer-1);}',
-    '.ds-ardl-btn:disabled{opacity:.5;cursor:default;}',
-    '.ds-ardl-btn.restore{color:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);background:transparent;}',
-    '.ds-ardl-btn.restore:hover{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent);}',
-    '.ds-ardl-btn.danger{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary);background:transparent;}',
-    '.ds-ardl-btn.danger:hover{background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 14%, transparent);}',
-    '.ds-ardl-btn.primary{background:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary);color:#fff;}',
-    '.ds-ardl-btn.primary:hover{filter:brightness(.94);}',
-    '.ds-ardl-actions{display:flex;gap:6px;}',
-    '.ds-ardl-empty{color:var(--dsw-alias-label-secondary);padding:14px 4px;}',
+    '.ds-ardl-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;flex:0 1 auto;min-width:0;white-space:nowrap;border:0;background:transparent;color:var(--dsw-alias-label-secondary);border-radius:7px;padding:3px 8px;cursor:pointer;font:inherit;font-size:12px;font-weight:500;line-height:18px;transition:background .12s ease,color .12s ease,opacity .12s ease;}',
+    '.ds-ardl-btn:hover{background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-primary);}',
+    '.ds-ardl-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px;}',
+    '.ds-ardl-btn:disabled{opacity:.45;cursor:default;}',
+    '.ds-ardl-btn.restore{color:var(--dsw-alias-label-secondary);}',
+    '.ds-ardl-btn.restore:hover{background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-brand-primary);}',
+    '.ds-ardl-btn.danger{color:var(--dsw-alias-state-error-primary);}',
+    '.ds-ardl-btn.danger:hover{background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);color:var(--dsw-alias-state-error-primary);}',
+    '.ds-ardl-btn.primary{background:var(--dsw-alias-state-error-primary);color:#fff;padding:3px 11px;}',
+    '.ds-ardl-btn.primary:hover{background:var(--dsw-alias-state-error-primary);color:#fff;filter:brightness(.94);}',
+    '.ds-ardl-actions{display:flex;flex:none;align-items:center;gap:2px;margin-top:-3px;}',
+    '.ds-ardl-actions .ds-ardl-btn.danger{opacity:0;pointer-events:none;}',
+    '.ds-ardl-row:hover .ds-ardl-actions .ds-ardl-btn.danger,.ds-ardl-row:focus-within .ds-ardl-actions .ds-ardl-btn.danger{opacity:1;pointer-events:auto;}',
+    '.ds-ardl-empty{color:var(--dsw-alias-label-tertiary);padding:20px 8px;font-size:13px;}',
     '.ds-ardl-err{color:var(--dsw-alias-state-error-primary);font-size:12px;margin:8px 2px;}',
+    '@media (max-width:520px){.ds-ardl-row{flex-wrap:wrap;padding:6px 12px;}.ds-ardl-actions{width:100%;justify-content:flex-end;}}',
+    '@media (hover:none){.ds-ardl-actions .ds-ardl-btn.danger{opacity:1;pointer-events:auto;}}',
+    '@media (pointer:coarse){.ds-ardl-actions .ds-ardl-btn.danger{opacity:1;pointer-events:auto;}}',
+    '@media (prefers-reduced-motion:reduce){.ds-ardl-search,.ds-ardl-chip,.ds-ardl-row,.ds-ardl-btn,.ds-ardl-group-caret::before{transition:none;}}',
     '.ds-ardl-cfg{display:flex;flex-direction:column;gap:14px;max-width:760px;color:var(--dsw-alias-label-primary);}',
     '.ds-ardl-cfg-heading{margin:0;font-size:16px;font-weight:600;line-height:24px;}',
     '.ds-ardl-cfg-group{display:flex;flex-direction:column;}',
@@ -294,6 +321,8 @@ export function apply(ctx) {
     '.ds-ardl-cfg-notice{font-size:12px;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-2);border-radius:8px;padding:8px 10px;}',
     '.ds-ardl-cfg-error{font-size:12px;color:var(--dsw-alias-state-error-primary);}',
     '.ds-ardl-cfg-scan{display:flex;align-items:center;gap:10px;padding:10px 0 0;flex-wrap:wrap;}',
+    '.ds-ardl-cfg-scan .ds-ardl-btn{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);padding:6px 12px;font-size:13px;}',
+    '.ds-ardl-cfg-scan .ds-ardl-btn.danger{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, var(--dsw-alias-border-l2));}',
     '.ds-ardl-cfg-scan-state{font-size:12px;color:var(--dsw-alias-label-tertiary);}',
   ].join('');
 
@@ -312,6 +341,13 @@ export function apply(ctx) {
     const parts = s.split(/[\\/]/);
     return parts[parts.length - 1] || '';
   }
+  // Parent directory of a workspace path, used to tell two same-named projects
+  // apart without repeating the project name in the header's second line.
+  function dirnameOf(p) {
+    const s = String(p || '').replace(/[\\/]+$/, '');
+    const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+    return i > 0 ? s.slice(0, i) : '';
+  }
   function fmtTime(v) {
     if (!v) return '';
     const t = typeof v === 'number' ? v : Date.parse(v);
@@ -322,8 +358,6 @@ export function apply(ctx) {
   }
   const shortId = (id) => String(id).slice(0, 10);
   const titleOf = (r) => r.title || basenameOf(r.cwd) || shortId(r.id);
-  const subOf = (r) => [basenameOf(r.cwd), fmtTime(r.createdAt), r.agentPreset, shortId(r.id)].filter(Boolean).join('   ·   ');
-
   // ── Local cache ───────────────────────────────────────────────────────
   // Every settings open used to start from a blank "加载中". Painting the last
   // snapshot from localStorage (then revalidating behind it) makes the list feel
@@ -663,6 +697,13 @@ export function apply(ctx) {
 
     // group rows by workspace; groups follow their most recent session
     const groups = React.useMemo(() => groupRows(rows, t.unknownWorkspace), [rows, t.unknownWorkspace]);
+    // Two different workspaces can share a display name; a path line only appears
+    // for those, so the common case stays a single-line project header.
+    const groupLabelCounts = React.useMemo(() => {
+      const counts = {};
+      for (const group of groups) counts[group.label] = (counts[group.label] || 0) + 1;
+      return counts;
+    }, [groups]);
     const collapsedDefaults = React.useMemo(() => defaultCollapsedGroups(groups), [groups]);
     const searchingNow = String(query || '').trim().length > 0;
     const effectiveCollapsed = (key) => (searchingNow
@@ -710,58 +751,68 @@ export function apply(ctx) {
           key: i,
           className: 'ds-ardl-snippet' + (expanded ? ' expanded' : ' expandable'),
           title: expanded ? '' : (h.fullText || segments.map((seg) => seg.text).join('')),
-          onClick: () => setExpandedHits((prev) => ({ ...prev, [key]: !prev[key] })),
+          onClick: (e) => { e.stopPropagation(); setExpandedHits((prev) => ({ ...prev, [key]: !prev[key] })); },
         },
           segments.map((seg, j) => seg.hit
             ? React.createElement('mark', { key: j, className: 'ds-ardl-mark' }, seg.text)
             : React.createElement('span', { key: j }, seg.text))
         );
       };
-      return React.createElement('div', { key: s.id, className: 'ds-ardl-row' },
+      return React.createElement('div', {
+        key: s.id,
+        className: 'ds-ardl-row' + (isSelected ? ' selected' : ''),
+        onClick: () => togglePreview(s.id),
+      },
         React.createElement('input', {
           type: 'checkbox',
+          className: 'ds-ardl-check',
+          'aria-label': titleOf(s),
           checked: isSelected,
+          onClick: (e) => e.stopPropagation(),
           onChange: (e) => {
             const next = new Set(selectedIds);
             if (e.target.checked) next.add(s.id); else next.delete(s.id);
             setSelectedIds(next);
           },
-          style: { marginRight: '8px' },
         }),
         React.createElement('div', { className: 'ds-ardl-meta' },
-          React.createElement('div', {
-            className: 'ds-ardl-title',
-            style: { cursor: 'pointer' },
-            onClick: (e) => { e.stopPropagation(); togglePreview(s.id); },
-            title: s.title ? (s.title + ' — ' + t.previewTitle) : t.previewTitle,
-          },
-            titleOf(s),
-            !s.title && titlesPending > 0
-              ? React.createElement('span', { className: 'ds-ardl-title-pending', title: t.titleLoading }, '···')
-              : null,
-            previewOpen ? '  ▲' : '  ▾'
+          React.createElement('div', { className: 'ds-ardl-title-line' },
+            React.createElement('button', {
+              type: 'button',
+              className: 'ds-ardl-title-toggle',
+              'aria-expanded': previewOpen ? 'true' : 'false',
+              onClick: (e) => { e.stopPropagation(); togglePreview(s.id); },
+              title: s.title ? (s.title + ' — ' + t.previewTitle) : t.previewTitle,
+            },
+              React.createElement('span', { className: 'ds-ardl-title-text' }, titleOf(s)),
+              !s.title && titlesPending > 0
+                ? React.createElement('span', { className: 'ds-ardl-title-pending', title: t.titleLoading }, '···')
+                : null
+            )
           ),
-          React.createElement('div', { className: 'ds-ardl-sub' }, subOf(s)),
+          React.createElement('div', { className: 'ds-ardl-sub' },
+            React.createElement('span', { className: 'ds-ardl-meta-time' }, fmtTime(s.createdAt))
+          ),
           snippetList.length > 0
             ? React.createElement('div', { className: 'ds-ardl-snippets' },
                 visibleHits.map(renderHit),
                 allHitsOpen && snippetList.length > 1
-                  ? React.createElement('button', { type: 'button', className: 'ds-ardl-hit-toggle', onClick: () => setExpandedHitRows((prev) => {
+                  ? React.createElement('button', { type: 'button', className: 'ds-ardl-hit-toggle', onClick: (e) => { e.stopPropagation(); setExpandedHitRows((prev) => {
                       const next = new Set(prev);
                       next.delete(s.id);
                       return next;
-                    }) }, t.hideHits)
+                    }); } }, t.hideHits)
                   : hiddenHits > 0
-                    ? React.createElement('button', { type: 'button', className: 'ds-ardl-hit-toggle', onClick: () => setExpandedHitRows((prev) => {
+                    ? React.createElement('button', { type: 'button', className: 'ds-ardl-hit-toggle', onClick: (e) => { e.stopPropagation(); setExpandedHitRows((prev) => {
                         const next = new Set(prev);
                         next.add(s.id);
                         return next;
-                      }) }, t.moreHits(hiddenHits))
+                      }); } }, t.moreHits(hiddenHits))
                     : null
               )
             : null,
           previewOpen
-            ? React.createElement('div', { className: 'ds-ardl-preview' },
+            ? React.createElement('div', { className: 'ds-ardl-preview', onClick: (e) => e.stopPropagation() },
                 previewMsgs === undefined
                   ? React.createElement('div', { className: 'ds-ardl-preview-loading' }, t.previewLoading)
                   : (previewMsgs.length === 0
@@ -775,12 +826,12 @@ export function apply(ctx) {
         ),
         confirming
           ? React.createElement('div', { className: 'ds-ardl-actions' },
-              React.createElement('button', { className: 'ds-ardl-btn primary', disabled: busyId === s.id, onClick: () => doDelete(s.id) }, busyId === s.id ? t.deleting : t.confirmDelete),
-              React.createElement('button', { className: 'ds-ardl-btn', disabled: busyId === s.id, onClick: () => setConfirmId(undefined) }, t.cancel)
+              React.createElement('button', { className: 'ds-ardl-btn primary', disabled: busyId === s.id, onClick: (e) => { e.stopPropagation(); doDelete(s.id); } }, busyId === s.id ? t.deleting : t.confirmDelete),
+              React.createElement('button', { className: 'ds-ardl-btn', disabled: busyId === s.id, onClick: (e) => { e.stopPropagation(); setConfirmId(undefined); } }, t.cancel)
             )
           : React.createElement('div', { className: 'ds-ardl-actions' },
-              React.createElement('button', { className: 'ds-ardl-btn restore', disabled: busyId === s.id, onClick: () => doRestore(s.id) }, t.restoreOpen),
-              React.createElement('button', { className: 'ds-ardl-btn danger', disabled: busyId === s.id, onClick: () => setConfirmId(s.id) }, t.delete)
+              React.createElement('button', { className: 'ds-ardl-btn restore', disabled: busyId === s.id, onClick: (e) => { e.stopPropagation(); doRestore(s.id); } }, t.restoreOpen),
+              React.createElement('button', { className: 'ds-ardl-btn danger', disabled: busyId === s.id, onClick: (e) => { e.stopPropagation(); setConfirmId(s.id); } }, t.delete)
             )
       );
     };
@@ -791,6 +842,7 @@ export function apply(ctx) {
         ? React.createElement('div', { className: 'ds-ardl-empty' }, query.trim() ? t.emptyNoMatch : t.emptyNoArchived)
         : groups.map((group) => {
             const collapsed = effectiveCollapsed(group.key);
+            const groupPath = dirnameOf(group.key);
             return React.createElement('div', { key: group.key, className: 'ds-ardl-group' + (collapsed ? ' collapsed' : '') },
               React.createElement('button', {
                 type: 'button',
@@ -799,11 +851,16 @@ export function apply(ctx) {
                 title: collapsed ? t.expandGroup : t.collapseGroup,
                 onClick: () => setGroupCollapsed(group.key, !collapsed),
               },
-                React.createElement('span', { className: 'ds-ardl-group-caret' }, collapsed ? '▸' : '▾'),
-                React.createElement('span', { className: 'ds-ardl-group-name', title: group.key }, group.label),
-                React.createElement('span', { className: 'ds-ardl-group-count' }, String(group.items.length))
+                React.createElement('span', { className: 'ds-ardl-group-caret', 'aria-hidden': 'true' }),
+                React.createElement('span', { className: 'ds-ardl-group-title' },
+                  React.createElement('span', { className: 'ds-ardl-group-name', title: group.key }, group.label),
+                  groupLabelCounts[group.label] > 1 && groupPath
+                    ? React.createElement('span', { className: 'ds-ardl-group-path', title: group.key }, groupPath)
+                    : null
+                ),
+                React.createElement('span', { className: 'ds-ardl-group-count' }, t.groupCount(group.items.length))
               ),
-              collapsed ? null : group.items.map(renderRow)
+              collapsed ? null : React.createElement('div', { className: 'ds-ardl-group-body' }, group.items.map(renderRow))
             );
           });
 
