@@ -1,6 +1,6 @@
 {
   "name": "@chushiz/dsh-archive-manager",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "DSH plugin: browse archived sessions, restore them to continue the conversation, hard-delete them, and optionally auto-archive idle sessions. Settings live on the Plugins page.",
   "keywords": [
     "dsh-plugin",

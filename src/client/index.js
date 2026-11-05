@@ -181,6 +181,16 @@ export function apply(ctx) {
   const slots = ctx.slots ?? ctx.get('slots');
   const sessions = ctx.sessions ?? ctx.get('sessions');
   const timer = ctx.timer ?? ctx.get('timer');
+  // uiWorkspace is optional: reading it as a property would throw in Cordis
+  // because this plugin does not declare it, so probe through ctx.get().
+  // Deliberately NOT added to the top-level `inject` array: a runtime without
+  // uiWorkspace would then never resolve this plugin and the UI would vanish.
+  // 0.2.2 opens a restored session via uiWorkspace.openSession; older runtimes
+  // fall back to sessions.open (a no-op service method, see doRestore).
+  let uiWorkspace;
+  try {
+    uiWorkspace = typeof ctx.get === 'function' ? ctx.get('uiWorkspace') : undefined;
+  } catch {}
   if (slots === undefined) return;
   // HTTP fallback via webServer route (for runtimes that don't proxy archiveManager).
   // Also used for titles() when the proxied service lacks that newer method.
@@ -619,7 +629,14 @@ export function apply(ctx) {
         setConfirmId(undefined);
         if (close) close();
         timer.timeout(() => {
-          try { if (sessions) sessions.open(id); } catch (_e) {}
+          // 0.2.2 uses uiWorkspace.openSession; older DSH falls back to
+          // sessions.open. Stay silent either way — the session is already
+          // restored, a missing opener must not surface as a restore error.
+          try {
+            const api = uiWorkspace ?? (typeof ctx.get === 'function' ? ctx.get('uiWorkspace') : undefined);
+            if (api && typeof api.openSession === 'function') api.openSession(id);
+            else if (sessions && typeof sessions.open === 'function') sessions.open(id);
+          } catch (_e) {}
         }, 300);
       } catch (e) {
         setError(t.errorRestore(e && e.message ? e.message : String(e)));

@@ -56,7 +56,8 @@ dsh plugin --profile web add @chushiz/dsh-archive-manager
 
 | DSH 版本 | 状态 |
 | --- | --- |
-| 0.2.1-rc.5 | ✅ 本机实测 |
+| 0.2.2-rc.1 | ✅ 本机实测 |
+| 0.2.1-rc.5 | ✅ 实测过 |
 | 0.2.1-rc.3 | ✅ 实测过 |
 | 0.2.0-rc.2 | ✅ 实测过 |
 | 其他 0.2.x | 大致可用，建议用上面的版本 |

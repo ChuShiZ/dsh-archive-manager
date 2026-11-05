@@ -56,7 +56,8 @@ Sessions matching either rule are archived and can always be restored from **Set
 
 | DSH version | Status |
 | --- | --- |
-| 0.2.1-rc.5 | ✅ tested locally |
+| 0.2.2-rc.1 | ✅ tested locally |
+| 0.2.1-rc.5 | ✅ tested |
 | 0.2.1-rc.3 | ✅ tested |
 | 0.2.0-rc.2 | ✅ tested |
 | other 0.2.x | likely works; prefer the versions above |

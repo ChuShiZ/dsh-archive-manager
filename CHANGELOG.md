@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.1
+
+- 兼容 DSH 0.2.2-rc.1：本机实测浏览 / 搜索 / 预览 / 恢复 / 删除 / 自动归档全部正常。
+- 修复：恢复会话后不自动打开该会话（DSH 客户端 `sessions` 服务没有 `open()`；改用 `ctx.uiWorkspace.openSession()`，旧 API 作回退）。
+
 ## 0.11.0
 
 - 新增自动归档（默认关闭）：按闲置天数 `autoArchive.maxAgeDays`（默认 5 天）和/或每项目保留数量 `maxPerWorkspace` 归档旧会话。
